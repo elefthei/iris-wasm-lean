@@ -84,10 +84,10 @@ theorem interp_ctx_push_label_block (C : TContext) (hl : List (Hostfuncidx × Fu
   simp only [List.drop_succ_cons]
   iexact Hcont
 
-@[rocq_alias iriswasm.typing_block]
-theorem typing_block (C : TContext) (tn tm : List ValueType) (es : List BasicInstruction)
+theorem typing_block (C : TContext) {bt : Wasm.BlockType} (tn tm : List ValueType)
+    (es : List BasicInstruction) (hsig : expandBlockType C.typesT bt = some (.tf tn tm))
     (h : ⊢ semanticTyping (GF := GF) (updLabel C ([tm] ++ C.label)) (toEList es) (.tf tn tm)) :
-    ⊢ semanticTyping (GF := GF) C (toEList [.block (.tf tn tm) es]) (.tf tn tm) := by
+    ⊢ semanticTyping (GF := GF) C (toEList [.block bt es]) (.tf tn tm) := by
   unfold semanticTyping
   iintro %i %lh %hl #Hi #Hc %f %vs ⟨Hf, Hfv⟩ #Hv
   unfold interpVal interpValues
@@ -97,9 +97,11 @@ theorem typing_block (C : TContext) (tn tm : List ValueType) (es : List BasicIns
   subst Heq
   ihave %Hlen := BigSepL2.bigSepL2_length $$ Hv
   unfold interpExpression
-  rw [show toEList [.block (.tf tn tm) es] = [.basic (.block (.tf tn tm) es)] from rfl]
-  iapply wp_block (vs := ofVal (.immV ws)) (es := es) (n := ws.length) (m := tm.length)
-    (t1s := tn) (t2s := tm) (const_list_of_val ws) (of_val_length ws) Hlen.symm rfl $$ Hf
+  ihave ⟨%Htypes, Hfv⟩ := interp_frame_types $$ Hi Hfv
+  rw [show toEList [.block bt es] = [.basic (.block bt es)] from rfl]
+  iapply wp_block (bt := bt) (f := f) (vs := ofVal (.immV ws)) (es := es) (n := ws.length)
+    (m := tm.length) (t1s := tn) (t2s := tm) (const_list_of_val ws) (of_val_length ws)
+    Hlen.symm rfl (Htypes.symm ▸ hsig) $$ Hf
   inext
   iintro Hf
   icases wp_wasm_empty_ctx (GF := GF) .NotStuck ⊤ _ _ with ⟨-, H⟩

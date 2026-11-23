@@ -3,8 +3,11 @@ Copyright (c) The Iris-Wasm Lean port contributors
 Released under MIT license as described in the file LICENSE.
 Authors: Iris-Wasm Lean port contributors
 -/
+import Wasm.ModuleValidation
+import Wasm.TypeMatching
 import IrisWasm.Porting
 import IrisWasm.Language.IrisWp
+import IrisWasm.Denotational.Run
 import IrisWasm.Language.IrisWpDef
 import IrisWasm.Language.IrisAtomicity
 import IrisWasm.Helpers.LfillPrelude.LfillExtension

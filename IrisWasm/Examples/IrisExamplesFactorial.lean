@@ -7,7 +7,7 @@ import IrisWasm.Rules.IrisRules
 import IrisWasm.Rules.IrisExampleHelper
 import IrisWasm.Rules.Proofmode
 import IrisWasm.Host.IrisHost
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/iris_examples_factorial.v`. -/
 
@@ -28,7 +28,7 @@ def factorialInstrs (fact : Nat) : List BasicInstruction :=
   [.getLocal 0,
    .const (xx 1),
    .relop .i32 (.i (.le .u)),
-   .if_ (.tf [] [.i32])
+   .if_ (.result (some .i32))
      [.const (xx 1)]
      [.getLocal 0,
       .const (xx 1),
@@ -129,16 +129,13 @@ private theorem wp_invoke_i32 (a : Nat) (i : Instance) (body : List BasicInstruc
     _ _ 0 (.base [] []) 1 fi f0 fi ?_
   · intro LI hLI
     simp [lfilled, lfill, constList] at hLI
-    subst hLI; simp [toVal, toValInstr, mergeValuesList]
+    subst hLI; exact toVal_native_frame_none _ _ _
   isplitr
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
   · iexact Hf
   isplitl [Ha Hbody]
   · iintro Hf
-    take_drop_app_rewrite 0
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
-    inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
     simp only [pushBase, List.nil_append]
@@ -192,7 +189,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
   iintro %n %hov Hf Ha
   let f : Frame := ⟨[.int32 n], i⟩
   have hfe : factorial fact = [.basic (.getLocal 0), .basic (.const (xx 1)),
-      .basic (.relop .i32 (.i (.le .u))), .basic (.if_ (.tf [] [.i32]) [.const (xx 1)]
+      .basic (.relop .i32 (.i (.le .u))), .basic (.if_ (.result (some .i32)) [.const (xx 1)]
         [.getLocal 0, .const (xx 1), .binop .i32 (.i .sub), .call fact, .getLocal 0,
          .binop .i32 (.i .mul)])] := rfl
   rw [hfe]
@@ -214,7 +211,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
   isplitl []
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
-  · iapply wp_relop (relop_le1 n) $$ Hf
+  · iapply wp_relop rfl rfl .i32Agree (relop_le1 n) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -226,7 +223,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
     iapply wp_if_true (by decide) $$ Hf
     inext; iintro Hf
     iapply iRewrite_nil_l
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+    iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
     inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
@@ -243,7 +240,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
     iapply wp_if_false (c := wasmBool false) rfl $$ Hf
     inext; iintro Hf
     iapply iRewrite_nil_l
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+    iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
     inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
@@ -266,7 +263,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
     isplitr
     · iintro ⟨%H, -⟩; cases H
     isplitl [Hf]
-    · iapply wp_binop (v := .int32 n') rfl $$ Hf
+    · iapply wp_binop (v := .int32 n') rfl rfl .i32Agree rfl $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -316,7 +313,7 @@ theorem factorial_spec (fact : Nat) (n : I32) (i : Instance) (a : Nat) :
     isplitr
     · iintro ⟨%H, -⟩; cases H
     isplitl [Hf]
-    · iapply wp_binop (binop_mul_fact n hlt) $$ Hf
+    · iapply wp_binop rfl rfl .i32Agree (binop_mul_fact n hlt) $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -364,7 +361,7 @@ def fInstr (recTyp : Nat) : List BasicInstruction :=
   [.getLocal 0,
    .const (xx 1),
    .relop .i32 (.i (.le .u)),
-   .if_ (.tf [] [.i32])
+   .if_ (.result (some .i32))
      [.const (xx 1)]
      [.getLocal 0,
       .const (xx 1),
@@ -423,7 +420,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
   rw [show yy 0 = Wasm.Int.natOfUint (Wasm.Int.intOfZ (w := 32) 0) from rfl]
   let fr : Frame := ⟨[.int32 n], i⟩
   have hfe : f recTyp = [.basic (.getLocal 0), .basic (.const (xx 1)),
-      .basic (.relop .i32 (.i (.le .u))), .basic (.if_ (.tf [] [.i32]) [.const (xx 1)]
+      .basic (.relop .i32 (.i (.le .u))), .basic (.if_ (.result (some .i32)) [.const (xx 1)]
         [.getLocal 0, .const (xx 1), .binop .i32 (.i .sub), .const (xx 0), .callIndirect recTyp,
          .getLocal 0,
          .binop .i32 (.i .mul)])] := rfl
@@ -446,7 +443,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
   isplitl []
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
-  · iapply wp_relop (relop_le1 n) $$ Hf
+  · iapply wp_relop rfl rfl .i32Agree (relop_le1 n) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -458,7 +455,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
     iapply wp_if_true (by decide) $$ Hf
     inext; iintro Hf
     iapply iRewrite_nil_l
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+    iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
     inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
@@ -475,7 +472,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
     iapply wp_if_false (c := wasmBool false) rfl $$ Hf
     inext; iintro Hf
     iapply iRewrite_nil_l
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+    iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
     inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
@@ -498,7 +495,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
     isplitr
     · iintro ⟨%H, -⟩; cases H
     isplitl [Hf]
-    · iapply wp_binop (v := .int32 n') rfl $$ Hf
+    · iapply wp_binop (v := .int32 n') rfl rfl .i32Agree rfl $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -554,7 +551,7 @@ theorem F_spec (fact recTyp tab : Nat) (n : I32) (i : Instance) (a : Nat) :
     isplitr
     · iintro ⟨%H, -⟩; cases H
     isplitl [Hf]
-    · iapply wp_binop (binop_mul_fact n hlt) $$ Hf
+    · iapply wp_binop rfl rfl .i32Agree (binop_mul_fact n hlt) $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -667,14 +664,10 @@ theorem main_host_spec (fact glob : Nat) (F : I32) (myrec tab mutTab fFact fF fM
   let fm : Frame := ⟨[], i⟩
   -- local bind
   iapply (wp_frame_rewrite _ _ _ _ _ _).1
-  iapply wp_frame_bind _ _ _ 0 fm f _ (by simp [toVal, toValInstr, mergeValuesList]) $$ Hf
+  iapply wp_frame_bind _ _ _ 0 fm f _ (toVal_native_frame_none _ _ _) $$ Hf
   iintro Hf
-  -- block
-  take_drop_app_rewrite 0
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
-  inext; iintro Hf
   -- label bind
-  rw [show ([] : List AdministrativeInstruction) ++ toEList (mainInstr fact glob) =
+  rw [show toEList (mainInstr fact glob) =
     [.basic (.getGlobal glob), .basic (.call fact), .basic (.setGlobal glob)] from rfl]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
@@ -720,12 +713,9 @@ theorem main_host_spec (fact glob : Nat) (F : I32) (myrec tab mutTab fFact fF fM
     inext; iintro ⟨Hf, Hfact⟩
     rw [show ([Value.int32 n] ++ nZeros []) = [.int32 n] from rfl]
     iapply (wp_frame_rewrite _ _ _ _ _ _).1
-    iapply wp_frame_bind _ _ _ 1 ff fm _ (by simp [toVal, toValInstr, mergeValuesList]) $$ Hf
+    iapply wp_frame_bind _ _ _ 1 ff fm _ (toVal_native_frame_none _ _ _) $$ Hf
     iintro Hf
-    take_drop_app_rewrite 0
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
-    inext; iintro Hf
-    rw [show ([] : List AdministrativeInstruction) ++ toEList (factInstr (.int32 F) myrec tFactTyp) =
+    rw [show toEList (factInstr (.int32 F) myrec tFactTyp) =
       [.basic (.getLocal 0), .basic (.const (.int32 F)), .basic (.call myrec),
         .basic (.const (xx 0)), .basic (.callIndirect tFactTyp)] from rfl]
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
@@ -757,13 +747,9 @@ theorem main_host_spec (fact glob : Nat) (F : I32) (myrec tab mutTab fFact fF fM
       inext; iintro ⟨Hf, Hmyrec⟩
       rw [show ([Value.int32 F] ++ nZeros []) = [.int32 F] from rfl]
       iapply (wp_frame_rewrite _ _ _ _ _ _).1
-      iapply wp_frame_bind _ _ _ 0 fr ff _ (by simp [toVal, toValInstr, mergeValuesList]) $$ Hf
+      iapply wp_frame_bind _ _ _ 0 fr ff _ (toVal_native_frame_none _ _ _) $$ Hf
       iintro Hf
-      take_drop_app_rewrite 0
-      iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
-      inext; iintro Hf
-      rw [show ([] : List AdministrativeInstruction) ++ toEList (myrecInstr mutTab) = IrisWasm.Examples.myrec mutTab
-        from rfl]
+      rw [show toEList (myrecInstr mutTab) = IrisWasm.Examples.myrec mutTab from rfl]
       iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
       iapply wp_label_push_nil
       simp only [pushBase]
@@ -983,10 +969,8 @@ def factorialImpts : List ExternT :=
 
 @[rocq_alias iriswasm.factorial_module_typing]
 theorem factorial_module_typing : ModuleTyping factorialModule factorialImpts [] := by
-  refine ⟨[.tf [.i32] [], .tf [.i32] [.i32], .tf [.i32] [.i32], .tf [] []], [], ?_⟩
-  refine ⟨.cons ?_ (.cons ?_ (.cons ?_ (.cons ?_ .nil))), rfl, rfl, .nil, by simp,
-    by simp, rfl, .cons rfl (.cons rfl .nil), .nil⟩
-  all_goals exact ⟨by decide, by decide, (b_e_type_checker_reflects_typing _ _ _).1 rfl⟩
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  rfl
 
 @[rocq_alias iriswasm.factorial_module_instantiate]
 def factorialModuleInstantiate : List HostE := [.instantiate [] 0 [0, 1]]
@@ -1089,7 +1073,7 @@ theorem instantiate_factorial (hidx gidx modTab : Nat) (n : I32) :
   have htc : getImportTableCount factorialModule = 0 := rfl
   subst Htabeq
   rw [hfc, htc, ← hrest,
-    show moduleInstBuildTables factorialModule inst = [⟨[none], none⟩] from rfl]
+    show moduleInstBuildTables factorialModule inst = [⟨RunTable.uniform 1 none, none⟩] from rfl]
   unfold moduleInstResourcesFunc moduleInstResourcesTab
   ihave ⟨%Hflen, Hrf⟩ := BI.persistent_entails_right BI.BigSepL2.bigSepL2_length $$ Hrf
   ihave ⟨%Htlen, Hrt⟩ := BI.persistent_entails_right BI.BigSepL2.bigSepL2_length $$ Hrt
@@ -1102,6 +1086,7 @@ theorem instantiate_factorial (hidx gidx modTab : Nat) (n : I32) :
   ihave ⟨Ht, -⟩ := BI.BigSepL2.bigSepL2_cons.1 $$ Hrt
   unfold tabBlock
   icases Ht with ⟨Ht, -, -⟩
+  isimp only [Tableinst.data, RunTable.toList_uniform, List.replicate_succ, List.replicate_zero] at Ht
   ihave ⟨Ht, -⟩ := BI.BigSepL.bigSepL_cons.1 $$ Ht
   simp only [factorialModule]
   ihave ⟨Hmyrec, Hrf⟩ := BI.BigSepL2.bigSepL2_cons.1 $$ Hrf

@@ -23,17 +23,17 @@ Returns the pointer to the start of the stack, or -1 if allocation fails. Cannot
 @[rocq_alias iriswasm.new_stack]
 def newStack : List BasicInstruction :=
   [ i32const 1,
-    .growMemory,
+    .growMemory 0,
     .teeLocal 0,
     i32const (-1),
     .relop .i32 (.i .eq),
-    .if_ (.tf [] [.i32]) [ i32const (-1) ]
+    .if_ (.result (some .i32)) [ i32const (-1) ]
       [ .getLocal 0,
         i32const 65536,
         .binop .i32 (.i .mul),
         .teeLocal 0,
         .getLocal 0,
-        .store .i32 none 0 0,
+        .store .i32 none ⟨0, 0, 0⟩,
         .getLocal 0 ] ]
 
 section stack
@@ -133,7 +133,7 @@ private theorem wp_tee_relop {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF
   isplitr
   · iintro ⟨%h, -⟩; cases h
   isplitl [Hf]
-  · iapply wp_relop hb $$ Hf
+  · iapply wp_relop rfl rfl .i32Agree hb $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -142,14 +142,14 @@ private theorem wp_tee_relop {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF
 
 /-! ### Specs -/
 
-@[rocq_alias iriswasm.spec_new_stack]
+#rocq_ignore iriswasm.spec_new_stack "The size token identifies the memory as memory32"
 theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
     ⊢ ({{{{ ⌜f0.inst.memory[0]? = some n⌝ ∗ ⌜f0.locs.length ≥ 1⌝ ∗ ⌜pageSize ∣ len⌝ ∗
-          ↪[frame] f0 ∗ n ↦[wmlength] len }}}}
+          ↪[frame] f0 ∗ n ↦[wmlength] (.i32, len) }}}}
         (toEList newStack) @ E
-      {{{{ v, ((⌜v = .immV [valueOfInt (-1)]⌝ ∗ n ↦[wmlength] len) ∨
+      {{{{ v, ((⌜v = .immV [valueOfInt (-1)]⌝ ∗ n ↦[wmlength] (.i32, len)) ∨
             (⌜v = .immV [valueOfUint len]⌝ ∗ isStack len [] n ∗
-              n ↦[wmlength] (len + pageSize))) ∗
+              n ↦[wmlength] (.i32, len + pageSize))) ∗
           ∃ f1, ↪[frame] f1 ∗ ⌜f1.inst = f0.inst⌝ }}}} : IProp GF) := by
   iintro !> %Φ ⟨%Hinst, %Hflocs, %Hlendiv, Hf, Hlen⟩ HΦ
   simp only [newStack, toEList, List.map, i32const]
@@ -158,15 +158,15 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
       ((len / pageSize : Nat) : _root_.Int))]⌝) ∗
       n ↦[wms][ len ] List.replicate (Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 1) * pageSize)
         (0 : Byte) ∗
-      n ↦[wmlength] (len + Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 1) * pageSize)) ∗
-      ⌜MemInBound (len / pageSize + Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 1))⌝) ∨
-      (⌜w = .immV [.int32 int32MinusOne]⌝ ∗ n ↦[wmlength] len)) ∗ ↪[frame] f0))
+      n ↦[wmlength] (.i32, len + Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 1) * pageSize)) ∗
+      ⌜MemInBound .i32 (len / pageSize + Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 1))⌝) ∨
+      (⌜w = .immV [.int32 int32MinusOne]⌝ ∗ n ↦[wmlength] (.i32, len))) ∗ ↪[frame] f0))
   isplitr
   · iintro ⟨(⟨⟨%h, -⟩, -⟩ | ⟨%h, -⟩), -⟩ <;> cases h
   isplitl [Hf Hlen]
-  · iapply wp_grow_memory _ _ n f0 len
+  · iapply wp_grow_memory (aw := .i32) (x := 0) _ _ n f0 len
       (fun w => iprop(⌜w = .immV [.int32 (Wasm.Int.intOfZ ((len / pageSize : Nat) : _root_.Int))]⌝))
-      (fun w => iprop(⌜w = .immV [.int32 int32MinusOne]⌝)) _ Hinst
+      (fun w => iprop(⌜w = .immV [.int32 int32MinusOne]⌝)) (.i32 (Wasm.Int.intOfZ 1)) Hinst
     iframe
     isplit <;> inext <;> ipureintro <;> rfl
   iintro %w ⟨H, Hf⟩
@@ -174,7 +174,8 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
   · subst hw
     rw [nOfUint_one] at Hbound
     have hdiv := Nat.div_mul_cancel Hlendiv
-    have hp : len / pageSize < 65536 := by unfold MemInBound pageLimit at Hbound; omega
+    change len / pageSize + 1 ≤ 65536 at Hbound
+    have hp : len / pageSize < 65536 := by omega
     have hlen32 : len ≤ ffff0000 := by unfold ffff0000 pageSize at *; omega
     have hL : Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (len : _root_.Int)) = len :=
       nOfUint_nat len (by unfold ffff0000 at hlen32; omega)
@@ -192,7 +193,7 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
     iapply wp_if_false (c := wasmBool false) rfl $$ Hf
     inext; iintro Hf
     take_drop_app_rewrite 0
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result (some .i32)) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
@@ -229,7 +230,7 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
       isplitr
       · iintro ⟨%h, -⟩; cases h
       isplitl [Hf]
-      · iapply wp_binop (mul_page len Hlendiv) $$ Hf
+      · iapply wp_binop rfl rfl .i32Agree (mul_page len Hlendiv) $$ Hf
         inext; ipureintro; rfl
       iintro %w ⟨%hw, Hf⟩
       subst hw
@@ -280,9 +281,9 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
       isplitr
       · iintro ⟨⟨%h, -⟩, -⟩; cases h
       isplitl [Hf Hb4]
-      · iapply wp_store (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32
+      · iapply wp_store (x := 0) (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32
           (.int32 (Wasm.Int.intOfZ (len : _root_.Int))) (List.replicate 4 0) 0 0
-          (Wasm.Int.intOfZ (len : _root_.Int)) n
+          (.i32 (Wasm.Int.intOfZ (len : _root_.Int))) n
           (⟨(f0.locs.set 0 (.int32 (Wasm.Int.intOfZ ((len / pageSize : Nat) : _root_.Int)))).set 0
             (.int32 (Wasm.Int.intOfZ (len : _root_.Int))), f0.inst⟩ : Frame) rfl rfl Hinst
         isplitr
@@ -355,7 +356,7 @@ theorem spec_new_stack (f0 : Frame) (n len : Nat) (E : CoPset) :
     iapply wp_if_true (by decide) $$ Hf
     inext; iintro Hf
     take_drop_app_rewrite 0
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result (some .i32)) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     inext; iintro Hf
     simp only [toEList, List.map, List.nil_append]
     iapply wp_wand_s $$ [Hf]
@@ -393,13 +394,13 @@ theorem interp_value_of_uint (i : Nat) :
     ⊢ (interpValue .i32 (valueOfUint i) : IProp GF) := by
   unfold interpValue interpValueI32; ipureintro; exact ⟨_, rfl⟩
 
-@[rocq_alias iriswasm.valid_new_stack]
+#rocq_ignore iriswasm.valid_new_stack "The stack invariant owns memory32 metadata"
 theorem valid_new_stack (m t : Nat) (funcs : List Funcaddr) :
     let i0 : Instance :=
       { types := [.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], funcs := funcs,
         tab := [t], memory := [m], globs := [] };
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [] [.i32] [.i32] (toEList newStack) [] : IProp GF) := by
   intro i0
   unfold interpClosureNative
@@ -419,7 +420,7 @@ theorem valid_new_stack (m t : Nat) (funcs : List Funcaddr) :
   subst hLI
   have h1 : toVal (toEList newStack) = none :=
     to_val_None_prepend_const [.basic (.const (.int32 (Wasm.Int.intOfZ 1)))] _ rfl
-      (to_val_None_append [.basic .growMemory] _
+      (to_val_None_append [.basic (.growMemory 0)] _
         (by simp [toVal_singleton, toValInstr, valOfValNotVal]))
   have h2 : toVal [AdministrativeInstruction.local [ValueType.i32].length ⟨[] ++ nZeros [.i32], i0⟩
       [.label [ValueType.i32].length [] (toEList newStack)]] = none := by

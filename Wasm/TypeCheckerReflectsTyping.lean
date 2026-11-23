@@ -1330,16 +1330,16 @@ theorem beSizeList_pos (bes : List BasicInstruction) : 1 ≤ beSizeList bes := b
 theorem beSizeSingle_pos (e : BasicInstruction) : 1 ≤ beSizeSingle e := by
   cases e <;> simp [beSizeSingle] <;> omega
 
-theorem beSizeSingle_block (tf : FunctionType) (l : List BasicInstruction) :
-    beSizeSingle (.block tf l) = 1 + beSizeList l := by
+theorem beSizeSingle_block (bt : BlockType) (l : List BasicInstruction) :
+    beSizeSingle (.block bt l) = 1 + beSizeList l := by
   simp [beSizeSingle, beSizeList]; omega
 
-theorem beSizeSingle_loop (tf : FunctionType) (l : List BasicInstruction) :
-    beSizeSingle (.loop tf l) = 1 + beSizeList l := by
+theorem beSizeSingle_loop (bt : BlockType) (l : List BasicInstruction) :
+    beSizeSingle (.loop bt l) = 1 + beSizeList l := by
   simp [beSizeSingle, beSizeList]; omega
 
-theorem beSizeSingle_if (tf : FunctionType) (l1 l2 : List BasicInstruction) :
-    beSizeSingle (.if_ tf l1 l2) = 1 + beSizeList l1 + beSizeList l2 := by
+theorem beSizeSingle_if (bt : BlockType) (l1 l2 : List BasicInstruction) :
+    beSizeSingle (.if_ bt l1 l2) = 1 + beSizeList l1 + beSizeList l2 := by
   simp [beSizeSingle, beSizeList]
 
 theorem tu_bet {C : TContext} {cts : CheckerType} {tm : List ValueType} {e : BasicInstruction}
@@ -1416,25 +1416,32 @@ theorem tc_to_bet_single (d : Nat)
   all_goals (rw [checkSingle.eq_def] at h; simp only [hnb, Bool.false_eq_true, ↓reduceIte] at h)
   case const v => exact tu_bet [] [typeof v] .const h
   case unop t op =>
-    cases op <;> simp only at h <;> split at h <;> (try simp at h) <;> rename_i hc <;>
-      exact tu_bet [t] [t] (.unop (by cases t <;> simp [isInt, isFloat] at hc <;> constructor)) h
+    split at h
+    · exact tu_bet [t] [t] (.unop ((unopTypeOK_iff ..).1 (by assumption))) h
+    · simp at h
   case binop t op =>
-    cases op <;> simp only at h <;> split at h <;> (try simp at h) <;> rename_i hc <;>
-      exact tu_bet [t, t] [t] (.binop (by cases t <;> simp [isInt, isFloat] at hc <;> constructor)) h
+    split at h
+    · exact tu_bet [t, t] [t] (.binop ((binopTypeOK_iff ..).1 (by assumption))) h
+    · simp at h
   case testop t op =>
     split at h
     · rename_i hc; exact tu_bet [t] [.i32] (.testop hc) h
     · simp at h
   case relop t op =>
-    cases op <;> simp only at h <;> split at h <;> (try simp at h) <;> rename_i hc <;>
-      exact tu_bet [t, t] [.i32] (.relop (by cases t <;> simp [isInt, isFloat] at hc <;> constructor)) h
+    split at h
+    · exact tu_bet [t, t] [.i32] (.relop ((relopTypeOK_iff ..).1 (by assumption))) h
+    · simp at h
   case cvtop t1 c t2 sx =>
     cases c <;> simp only at h <;> split at h <;> (try simp at h) <;> rename_i hc
     · simp only [convertCond, Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
       exact tu_bet [t2] [t1] (.convert hc.1 hc.2) h
-    · simp only [Bool.and_eq_true, bne_iff_ne, ne_eq, beq_iff_eq] at hc
+    · simp only [reinterpretCond, Bool.and_eq_true, bne_iff_ne, ne_eq, beq_iff_eq] at hc
       obtain ⟨⟨h1, h2⟩, rfl⟩ := hc
       exact tu_bet [t2] [t1] (.reinterpret h1 (by simp [h2])) h
+    · simp only [Bool.and_eq_true] at hc
+      cases sx with
+      | none => simp at hc
+      | some sx => exact tu_bet [t2] [t1] (.truncSat hc.1.1 hc.1.2) h
   case unreachable =>
     exact ⟨populateCt cts, populate_ct_agree cts hb, .unreachable⟩
   case nop =>
@@ -1443,29 +1450,30 @@ theorem tc_to_bet_single (d : Nat)
     obtain ⟨x, hx⟩ := tu_any cts tm h
     exact ⟨tm ++ [x], hx, bet_weakening_empty_2 tm .drop⟩
   case select => exact type_update_select_agree_bet C cts tm h
-  case block tf es =>
-    obtain ⟨tn, tm0⟩ := tf
-    simp only at h
+  case vbitselect => exact tu_bet [.v128, .v128, .v128] [.v128] .vbitselect h
+  case block bt es =>
+    rcases hsig : expandBlockType C.typesT bt with _ | ⟨tn, tm0⟩ <;>
+      simp only [hsig, cTypesAgree_bot, Bool.false_eq_true] at h
     split at h
     next hc =>
       have hd : beSizeList es ≤ d := by rw [beSizeSingle_block] at hs; omega
       obtain ⟨tn', h1, h2⟩ := ihL _ _ es tm0 _ hd rfl hc
       simp only [cTypesAgree_type] at h1; rw [← h1] at h2
-      exact tu_bet tn tm0 (.block h2) h
+      exact tu_bet tn tm0 (.block hsig h2) h
     next => simp at h
-  case loop tf es =>
-    obtain ⟨tn, tm0⟩ := tf
-    simp only at h
+  case loop bt es =>
+    rcases hsig : expandBlockType C.typesT bt with _ | ⟨tn, tm0⟩ <;>
+      simp only [hsig, cTypesAgree_bot, Bool.false_eq_true] at h
     split at h
     next hc =>
       have hd : beSizeList es ≤ d := by rw [beSizeSingle_loop] at hs; omega
       obtain ⟨tn', h1, h2⟩ := ihL _ _ es tm0 _ hd rfl hc
       simp only [cTypesAgree_type] at h1; rw [← h1] at h2
-      exact tu_bet tn tm0 (.loop h2) h
+      exact tu_bet tn tm0 (.loop hsig h2) h
     next => simp at h
-  case if_ tf es1 es2 =>
-    obtain ⟨tn, tm0⟩ := tf
-    simp only at h
+  case if_ bt es1 es2 =>
+    rcases hsig : expandBlockType C.typesT bt with _ | ⟨tn, tm0⟩ <;>
+      simp only [hsig, cTypesAgree_bot, Bool.false_eq_true] at h
     split at h
     next hc =>
       simp only [Bool.and_eq_true] at hc
@@ -1473,11 +1481,9 @@ theorem tc_to_bet_single (d : Nat)
       obtain ⟨tn1, h11, h12⟩ := ihL _ _ es1 tm0 _ (by omega) rfl hc.1
       obtain ⟨tn2, h21, h22⟩ := ihL _ _ es2 tm0 _ (by omega) rfl hc.2
       simp only [cTypesAgree_type] at h11 h21; rw [← h11] at h12; rw [← h21] at h22
-      have hb' : BeTyping C [.if_ (.tf tn tm0) es1 es2] (.tf (tn ++ [ValueType.i32]) tm0) := by
-        apply BeTyping.ifWasm
-        · exact h12
-        · exact h22
-      exact tu_bet (tn ++ [ValueType.i32]) tm0 hb' h
+      have hif : BeTyping C [.if_ bt es1 es2] (.tf (tn ++ [ValueType.i32]) tm0) :=
+        .ifWasm hsig h12 h22
+      exact tu_bet (tn ++ [ValueType.i32]) tm0 hif h
     next => simp at h
   case br i =>
     split at h
@@ -1559,30 +1565,37 @@ theorem tc_to_bet_single (d : Nat)
         next hm => exact tu_bet [xx.t] [] (.setGlobal hi hxx rfl hm) h
         next => simp at h
     next => simp at h
-  case load t tp a off =>
-    split at h
-    next hc =>
-      simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
-      exact tu_bet [.i32] [t] (.load hc.1 hc.2) h
-    next => simp at h
-  case store t tp a off =>
-    split at h
-    next hc =>
-      simp only [Bool.and_eq_true, bne_iff_ne, ne_eq] at hc
-      exact tu_bet [.i32, t] [] (.store hc.1 hc.2) h
-    next => simp at h
-  case currentMemory =>
-    split at h
-    next hc =>
-      simp only [bne_iff_ne, ne_eq] at hc
-      exact tu_bet [] [.i32] (.currentMemory hc) h
-    next => simp at h
-  case growMemory =>
-    split at h
-    next hc =>
-      simp only [bne_iff_ne, ne_eq] at hc
-      exact tu_bet [.i32] [.i32] (.growMemory hc) h
-    next => simp at h
+  case load t tp ma =>
+    cases hm : C.memory[ma.memory]? with
+    | none => simp [hm] at h
+    | some mt =>
+      simp only [hm] at h
+      split at h
+      · rename_i hc
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+        exact tu_bet [mt.address.valueType] [t] (.load hm hc.1 hc.2) h
+      · simp at h
+  case store t tp ma =>
+    cases hm : C.memory[ma.memory]? with
+    | none => simp [hm] at h
+    | some mt =>
+      simp only [hm] at h
+      split at h
+      · rename_i hc
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+        exact tu_bet [mt.address.valueType, t] [] (.store hm hc.1 hc.2) h
+      · simp at h
+  case currentMemory x =>
+    cases hm : C.memory[x]? with
+    | none => simp [hm] at h
+    | some mt =>
+      exact tu_bet [] [mt.address.valueType] (.currentMemory hm) (by simpa [hm, toCtList] using h)
+  case growMemory x =>
+    cases hm : C.memory[x]? with
+    | none => simp [hm] at h
+    | some mt =>
+      exact tu_bet [mt.address.valueType] [mt.address.valueType] (.growMemory hm)
+        (by simpa [hm, toCtList] using h)
 
 @[rocq_alias iriswasm.tc_to_bet_conj]
 theorem tc_to_bet_conj (d : Nat) :
@@ -1665,9 +1678,15 @@ theorem b_e_type_checker_reflects_typing (C : TContext) (bes : List BasicInstruc
     simp only [cTypesAgree_type] at h1; rw [← h1] at h2; exact h2
   · intro hb
     induction hb with
-    | unop h | binop h | relop h =>
-      cases h <;> simp [bETypeChecker, checkSingle.eq_def, typeUpdate, consume, produce, ctSuffix,
-        ctListCompat, toCtList, isInt, isFloat]
+    | unop h =>
+      simp [bETypeChecker, checkSingle.eq_def, (unopTypeOK_iff ..).2 h, typeUpdate, consume,
+        produce, ctSuffix, ctListCompat, toCtList]
+    | relop h =>
+      simp [bETypeChecker, checkSingle.eq_def, (relopTypeOK_iff ..).2 h, typeUpdate, consume,
+        produce, ctSuffix, ctListCompat, toCtList]
+    | binop h =>
+      simp [bETypeChecker, checkSingle.eq_def, (binopTypeOK_iff ..).2 h, typeUpdate, consume,
+        produce, ctSuffix, ctListCompat, toCtList]
     | testop h =>
       simp [bETypeChecker, checkSingle.eq_def, typeUpdate, consume, produce, ctSuffix,
         ctListCompat, toCtList, h]
@@ -1676,15 +1695,18 @@ theorem b_e_type_checker_reflects_typing (C : TContext) (bes : List BasicInstruc
         ctListCompat, toCtList, convertCond, h1, h2]
     | reinterpret h1 h2 =>
       simp [bETypeChecker, checkSingle.eq_def, typeUpdate, consume, produce, ctSuffix,
-        ctListCompat, toCtList, h1, Nat.beq_eq_true_eq] at h2 ⊢
+        ctListCompat, toCtList, reinterpretCond, h1, Nat.beq_eq_true_eq] at h2 ⊢
       simp [h2]
-    | block _ ih | loop _ ih =>
+    | truncSat hd hs =>
+      simp [bETypeChecker, checkSingle.eq_def, typeUpdate, consume, produce, ctSuffix,
+        ctListCompat, toCtList, hd, hs]
+    | block hsig _ ih | loop hsig _ ih =>
       simp only [bETypeChecker, ← check_eq_foldl, List.singleton_append] at ih
-      simp [bETypeChecker, checkSingle.eq_def, ih, typeUpdate, consume_self, produce,
+      simp [bETypeChecker, checkSingle.eq_def, hsig, ih, typeUpdate, consume_self, produce,
         -toCtList_append]
-    | ifWasm _ _ ih1 ih2 =>
+    | ifWasm hsig _ _ ih1 ih2 =>
       simp only [bETypeChecker, ← check_eq_foldl, List.singleton_append] at ih1 ih2
-      simp [bETypeChecker, checkSingle.eq_def, ih1, ih2, typeUpdate, consume_self, produce,
+      simp [bETypeChecker, checkSingle.eq_def, hsig, ih1, ih2, typeUpdate, consume_self, produce,
         -toCtList_append]
     | br hi hp =>
       simp only [plop2, beq_iff_eq, List.getElem?_eq_some_iff] at hp
@@ -1723,9 +1745,9 @@ theorem b_e_type_checker_reflects_typing (C : TContext) (bes : List BasicInstruc
       obtain ⟨_, h⟩ := List.getElem?_eq_some_iff.1 h
       simp [bETypeChecker, checkSingle.eq_def, hi, h, hm, typeUpdate, consume, produce, ctSuffix,
         ctListCompat, toCtList]
-    | load hm hb | store hm hb =>
-      simp [bETypeChecker, checkSingle.eq_def, hm, hb, typeUpdate, consume, produce, ctSuffix,
-        ctListCompat, toCtList]
+    | load hm hb ho | store hm hb ho =>
+      simp [bETypeChecker, checkSingle.eq_def, hm, hb, ho, typeUpdate, consume, produce,
+        ctSuffix, ctListCompat, toCtList]
     | currentMemory hm | growMemory hm =>
       simp [bETypeChecker, checkSingle.eq_def, hm, typeUpdate, consume, produce, ctSuffix,
         ctListCompat, toCtList]

@@ -1,0 +1,29 @@
+Base: WebAssembly/spec@6fca707686ed4f36a1e30ec2ae7d3dd32b276704, specification/wasm-3.0 only.
+
+A last-byte forward iteration can emit the mathematical value 2^N in a
+CONST of width N. Only the address constants in the continuation wrap;
+the byte access and the natural-number bounds premises are unchanged.
+
+--- a/specification/wasm-3.0/4.3-execution.instructions.spectec
++++ b/specification/wasm-3.0/4.3-execution.instructions.spectec
+@@ -583,5 +583,5 @@ rule Step_read/memory.fill-succ:
+   z; (CONST at i) val (CONST at n) (MEMORY.FILL x)  ~>
+     (CONST at i) val (STORE I32 `8 x $memarg0)
+-    (CONST at $(i+1)) val (CONST at $(n-1)) (MEMORY.FILL x)
++    (CONST at $iadd_($size(at), i, 1)) val (CONST at $(n-1)) (MEMORY.FILL x)
+   -- otherwise
+ 
+@@ -600,5 +600,5 @@ rule Step_read/memory.copy-le:
+   z; (CONST at_1 i_1) (CONST at_2 i_2) (CONST at' n) (MEMORY.COPY x_1 x_2)  ~>
+     (CONST at_1 i_1) (CONST at_2 i_2) (LOAD I32 (`8 _ U) x_2 $memarg0) (STORE I32 `8 x_1 $memarg0)
+-    (CONST at_1 $(i_1 + 1)) (CONST at_2 $(i_2 + 1)) (CONST at' $(n - 1)) (MEMORY.COPY x_1 x_2)
++    (CONST at_1 $iadd_($size(at_1), i_1, 1)) (CONST at_2 $iadd_($size(at_2), i_2, 1)) (CONST at' $(n - 1)) (MEMORY.COPY x_1 x_2)
+   -- otherwise
+   -- if i_1 <= i_2
+@@ -624,5 +624,5 @@ rule Step_read/memory.init-succ:
+   z; (CONST at i) (CONST I32 j) (CONST I32 n) (MEMORY.INIT x y)  ~>
+     (CONST at i) (CONST I32 $data(z,y).BYTES[j]) (STORE I32 `8 x $memarg0)
+-    (CONST at $(i+1)) (CONST I32 $(j+1)) (CONST I32 $(n-1)) (MEMORY.INIT x y)
++    (CONST at $iadd_($size(at), i, 1)) (CONST I32 $iadd_(32, j, 1)) (CONST I32 $(n-1)) (MEMORY.INIT x y)
+   -- otherwise
+ 

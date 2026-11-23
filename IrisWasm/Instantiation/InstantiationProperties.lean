@@ -3,7 +3,7 @@ Copyright (c) The Iris-Wasm Lean port contributors
 Released under MIT license as described in the file LICENSE.
 Authors: Iris-Wasm Lean port contributors
 -/
-import Wasm.Instantiation
+import Wasm.ModuleValidation
 import Wasm.TypePreservation
 import Wasm.TypeProgress
 import Wasm.StdppAux
@@ -31,74 +31,18 @@ private theorem forall2_mem_left {A B : Type} {R : A → B → Prop} :
     · exact ⟨_, h⟩
     · exact forall2_mem_left t a ha
 
-private theorem import_typing_det {c1 c2 : TContext} {d : ImportDesc} {e1 e2 : ExternT}
-    (h1 : moduleImportTyping c1 d e1 = true) (h2 : moduleImportTyping c2 d e2 = true)
-    (ht : c1.typesT = c2.typesT) : e1 = e2 := by
-  cases d <;> cases e1 <;> cases e2 <;>
-    simp only [moduleImportTyping, Bool.and_eq_true, decide_eq_true_eq, Bool.false_eq_true,
-      ExternT.func.injEq, ExternT.tab.injEq, ExternT.mem.injEq, ExternT.glob.injEq] at h1 h2 ⊢
-  case func.func.func n _ _ =>
-    rw [ht] at h1
-    obtain ⟨_, h1⟩ := h1; obtain ⟨_, h2⟩ := h2
-    generalize c2.typesT[n]? = o at h1 h2
-    cases o <;> simp_all
-  all_goals simp_all
-
-private theorem export_typing_det {c : TContext} {d : ModuleExportDesc} {e1 e2 : ExternT}
-    (h1 : moduleExportTyping c d e1 = true) (h2 : moduleExportTyping c d e2 = true) : e1 = e2 := by
-  rcases d with ⟨i⟩ | ⟨i⟩ | ⟨i⟩ | ⟨i⟩ <;> cases e1 <;> cases e2 <;>
-    simp only [moduleExportTyping, Bool.and_eq_true, decide_eq_true_eq, Bool.false_eq_true,
-      ExternT.func.injEq, ExternT.tab.injEq, ExternT.mem.injEq, ExternT.glob.injEq] at h1 h2 ⊢
-  case func.func.func =>
-    obtain ⟨_, h1⟩ := h1; obtain ⟨_, h2⟩ := h2
-    generalize c.funcT[i.1]? = o at h1 h2
-    cases o <;> simp_all
-  case table.tab.tab =>
-    obtain ⟨_, h1⟩ := h1; obtain ⟨_, h2⟩ := h2
-    generalize c.table[i.1]? = o at h1 h2
-    cases o <;> simp_all
-  case mem.mem.mem =>
-    obtain ⟨_, h1⟩ := h1; obtain ⟨_, h2⟩ := h2
-    generalize c.memory[i.1]? = o at h1 h2
-    cases o <;> simp_all
-  case global.glob.glob =>
-    obtain ⟨_, h1⟩ := h1; obtain ⟨_, h2⟩ := h2
-    generalize c.global[i.1]? = o at h1 h2
-    cases o <;> simp_all
-
-private theorem func_typing_det {c1 c2 : TContext} {m : ModuleFunc} {tf1 tf2 : FunctionType}
-    (h1 : ModuleFuncTyping c1 m tf1) (h2 : ModuleFuncTyping c2 m tf2)
-    (ht : c1.typesT = c2.typesT) : tf1 = tf2 := by
-  rcases m with ⟨⟨i⟩, _, _⟩
-  cases tf1; cases tf2
-  obtain ⟨_, h1, _⟩ := h1
-  obtain ⟨_, h2, _⟩ := h2
-  simp only [decide_eq_true_eq] at h1 h2
-  rw [← h1, ← h2, ht]
-
-@[rocq_alias iriswasm.module_typing_det_import_aux]
-theorem module_typing_det_import_aux {m : Module} {it1 et1 it2 et2 : List ExternT}
-    (h1 : ModuleTyping m it1 et1) (h2 : ModuleTyping m it2 et2) : it1 = it2 := by
-  obtain ⟨fts1, gts1, h1⟩ := h1
-  obtain ⟨fts2, gts2, h2⟩ := h2
-  rcases m with ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩
-  obtain ⟨-, -, -, -, -, -, -, hi1, -⟩ := h1
-  obtain ⟨-, -, -, -, -, -, -, hi2, -⟩ := h2
-  exact forall2_det hi1 hi2 fun _ _ _ _ a b => import_typing_det a b rfl
-
 @[rocq_alias iriswasm.module_typing_det]
 theorem module_typing_det {m : Module} {it1 et1 it2 et2 : List ExternT}
     (h1 : ModuleTyping m it1 et1) (h2 : ModuleTyping m it2 et2) : (it1, et1) = (it2, et2) := by
-  have hi := module_typing_det_import_aux h1 h2
-  subst hi
-  obtain ⟨fts1, gts1, h1⟩ := h1
-  obtain ⟨fts2, gts2, h2⟩ := h2
-  rcases m with ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩
-  obtain ⟨hf1, -, -, hg1, -, -, -, -, he1⟩ := h1
-  obtain ⟨hf2, -, -, hg2, -, -, -, -, he2⟩ := h2
-  obtain rfl := forall2_det hf1 hf2 fun _ _ _ _ a b => func_typing_det a b rfl
-  obtain rfl := forall2_det hg1 hg2 fun _ _ _ _ a b => a.2.1.trans b.2.1.symm
-  rw [forall2_det he1 he2 fun _ _ _ _ a b => export_typing_det a b]
+  have a := (validateModule_iff m ⟨it1, et1⟩).2 h1
+  have b := (validateModule_iff m ⟨it2, et2⟩).2 h2
+  cases Except.ok.inj (a.symm.trans b)
+  rfl
+
+@[rocq_alias iriswasm.module_typing_det_import_aux]
+theorem module_typing_det_import_aux {m : Module} {it1 et1 it2 et2 : List ExternT}
+    (h1 : ModuleTyping m it1 et1) (h2 : ModuleTyping m it2 et2) : it1 = it2 :=
+  congrArg Prod.fst (module_typing_det h1 h2)
 
 @[rocq_alias iriswasm.exp_default]
 def expDefault : ModuleExportDesc := .func (.funcidx 0)
@@ -272,7 +216,7 @@ theorem alloc_tab_gen_index {modtabtypes : List TableType} {ws ws' : StoreRecord
     {l : List Tableidx} (h : allocTabs ws modtabtypes = (ws', l)) :
     l.map (fun | .tableidx i => i) = genIndex ws.tables.length modtabtypes.length ∧
     ws'.tables = ws.tables ++ modtabtypes.map (fun tt =>
-      ({ data := List.replicate tt.limits.min none, maxOpt := tt.limits.max } : Tableinst)) ∧
+      ({ entries := RunTable.uniform tt.limits.min none, maxOpt := tt.limits.max } : Tableinst)) ∧
     ws.funcs = ws'.funcs ∧ ws.mems = ws'.mems ∧ ws.globals = ws'.globals := by
   induction modtabtypes generalizing ws l with
   | nil => cases h; simp [genIndex]
@@ -289,12 +233,11 @@ theorem alloc_tab_gen_index {modtabtypes : List TableType} {ws ws' : StoreRecord
     · simp [h1, genIndex_eq_range', List.range'_succ]
     · simp [h2]
 
-@[rocq_alias iriswasm.alloc_mem_gen_index]
+#rocq_ignore iriswasm.alloc_mem_gen_index "fresh memories retain their full descriptor"
 theorem alloc_mem_gen_index {modmemtypes : List MemoryType} {ws ws' : StoreRecord}
     {l : List Memidx} (h : allocMems ws modmemtypes = (ws', l)) :
     l.map (fun | .memidx i => i) = genIndex ws.mems.length modmemtypes.length ∧
-    ws'.mems = ws.mems ++ modmemtypes.map (fun lim =>
-      ({ data := MemoryList.memMake 0 (pageSize * lim.min), maxOpt := lim.max } : Memory)) ∧
+    ws'.mems = ws.mems ++ modmemtypes.map memMk ∧
     ws.funcs = ws'.funcs ∧ ws.tables = ws'.tables ∧ ws.globals = ws'.globals := by
   induction modmemtypes generalizing ws l with
   | nil => cases h; simp [genIndex]
@@ -309,7 +252,7 @@ theorem alloc_mem_gen_index {modmemtypes : List MemoryType} {ws ws' : StoreRecor
     simp only [allocMem, addMem] at h1 h2 h3 h4 h5 ⊢
     refine ⟨?_, ?_, h3, h4, h5⟩
     · simp [h1, genIndex_eq_range', List.range'_succ]
-    · simp [h2, memMk]
+    · simp [h2]
 
 @[rocq_alias iriswasm.alloc_glob_gen_index]
 theorem alloc_glob_gen_index {modglobs : List ModuleGlob} {ws : StoreRecord} {g_inits : List Value}
@@ -347,14 +290,37 @@ theorem init_tabs_preserve {ws : StoreRecord} {inst : Instance} {e_inits : List 
     (fun s : StoreRecord => ws.funcs = s.funcs ∧ ws.mems = s.mems ∧ ws.globals = s.globals)
     _ _ _ ⟨rfl, rfl, rfl⟩ fun _ _ hx => hx
 
-@[rocq_alias iriswasm.init_mems_preserve]
+/-- A failed active data segment keeps the store reached by the preceding writes;
+    neither successful nor failing initialization changes the other store components. -/
+theorem init_mems_preserve_result (ws : StoreRecord) (inst : Instance)
+    (offs : List Nat) (data : List ModuleData) (out : StoreRecord)
+    (h : initMems ws inst offs data = .ok out ∨ initMems ws inst offs data = .error out) :
+    ws.funcs = out.funcs ∧ ws.tables = out.tables ∧ ws.globals = out.globals := by
+  induction data generalizing ws offs with
+  | nil =>
+    cases offs <;> rcases h with h | h <;> cases h <;> exact ⟨rfl, rfl, rfl⟩
+  | cons d ds ih =>
+    cases offs with
+    | nil => rcases h with h | h <;> cases h <;> exact ⟨rfl, rfl, rfl⟩
+    | cons off os =>
+      cases hh : initMem ws inst off d with
+      | error failed =>
+        simp [initMems, hh] at h
+        subst out
+        unfold initMem at hh
+        repeat' split at hh
+        all_goals cases hh <;> exact ⟨rfl, rfl, rfl⟩
+      | ok mid =>
+        simp only [initMems, hh] at h
+        have htail := ih mid os h
+        obtain ⟨i, mem, -, -, -, rfl⟩ := initMem_ok_iff.mp hh
+        exact htail
+
+#rocq_ignore iriswasm.init_mems_preserve "successful checked initialization preserves the other fields"
 theorem init_mems_preserve {ws : StoreRecord} {inst : Instance} {d_inits : List Nat}
-    {mdata : List ModuleData} {ws' : StoreRecord} (h : initMems ws inst d_inits mdata = ws') :
-    ws.funcs = ws'.funcs ∧ ws.tables = ws'.tables ∧ ws.globals = ws'.globals := by
-  subst h
-  exact fold_left_preserve
-    (fun s : StoreRecord => ws.funcs = s.funcs ∧ ws.tables = s.tables ∧ ws.globals = s.globals)
-    _ _ _ ⟨rfl, rfl, rfl⟩ fun _ _ hx => hx
+    {mdata : List ModuleData} {ws' : StoreRecord} (h : initMems ws inst d_inits mdata = .ok ws') :
+    ws.funcs = ws'.funcs ∧ ws.tables = ws'.tables ∧ ws.globals = ws'.globals :=
+  init_mems_preserve_result ws inst d_inits mdata ws' (.inl h)
 
 private theorem import_counts {c : TContext} {imps : List ModuleImport} {ts : List ExternT}
     (h : Wasm.List.Forall₂ (fun (imp : ModuleImport) e => moduleImportTyping c imp.desc e = true)
@@ -388,31 +354,8 @@ theorem mod_imps_len_t {m : Module} {t_imps t_exps : List ExternT}
 
 /-! ### Section `Instantiation_det` -/
 
-@[rocq_alias iriswasm.bet_const_exprs_len]
-theorem bet_const_exprs_len {tc : TContext} {es : List BasicInstruction} {t1 t2 : List ValueType}
-    (hc : constExprs tc es = true) (h : BeTyping tc es (.tf t1 t2)) :
-    t2.length = es.length + t1.length := by
-  induction es generalizing t1 t2 with
-  | nil => rw [empty_typing h]; simp
-  | cons a es ih =>
-    simp only [constExprs, List.all_cons, Bool.and_eq_true] at hc
-    obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, h1, h2⟩ :=
-      composition_typing (es1 := [a]) (es2 := es) h
-    have ih' := ih hc.2 h2
-    have : t3s.length = t1s'.length + 1 := by
-      have ha := hc.1
-      cases a <;> simp [constExpr] at ha
-      · obtain ⟨_, _, rfl, _⟩ := Get_global_typing h1; simp
-      · rw [BI_const_typing h1]; simp
-    simp; omega
-
-@[rocq_alias iriswasm.const_exprs_impl]
-theorem const_exprs_impl {tc : TContext} {es : List BasicInstruction} {t : ValueType}
-    (hc : constExprs tc es = true) (h : BeTyping tc es (.tf [] [t])) :
-    ∃ e, es = [e] ∧ constExpr tc e = true := by
-  have hl := bet_const_exprs_len hc h
-  match es, hl with
-  | [e], _ => exact ⟨e, rfl, by simpa [constExprs] using hc⟩
+#rocq_ignore iriswasm.bet_const_exprs_len "integer binary operators consume two operands"
+#rocq_ignore iriswasm.const_exprs_impl "a singleton result need not come from a singleton initializer"
 
 private theorem lfilled_singleton {k : Nat} {lh : Lholed} {es : List AdministrativeInstruction}
     {e : AdministrativeInstruction} (h : lfilled k lh es [e] = true) (hne : es ≠ [])
@@ -492,37 +435,155 @@ theorem reduce_trans_get_global {s : StoreRecord} {f : Frame} {s' : StoreRecord}
   · obtain ⟨v', hv, rfl⟩ := reduce_get_global hr
     rw [hv, reduce_trans_const hrest]
 
-/-- A typed constant initialiser evaluates to the same value in stores agreeing on the globals
-visible to it. -/
-private theorem const_init_det {tc : TContext} {es : List BasicInstruction} {t : ValueType}
+-- A stack invariant for the actual reduction path, including a trapping intermediate expression.
+private def constResidual (tc : TContext) : AdministrativeInstruction → Bool
+  | .basic b => constExpr tc b
+  | .trap => true
+  | _ => false
+
+-- `none` is malformed; only a matched arithmetic redex or an explicit trap yields `.trap`.
+private def stackOp (read : Nat → Option Value) :
+    Option Result → AdministrativeInstruction → Option Result
+  | some .trap, _ => some .trap
+  | some (.values _), .trap => some .trap
+  | some (.values vs), .basic (.const v) => some (.values (v :: vs))
+  | some (.values vs), .basic (.getGlobal i) => (read i).map fun v => .values (v :: vs)
+  | some (.values (rhs :: lhs :: vs)), .basic (.binop t op) =>
+    if typesAgree t lhs && typesAgree t rhs && binopTypeOK t op then
+      some (match appBinop op lhs rhs with | some v => .values (v :: vs) | none => .trap)
+    else none
+  | _, _ => none
+
+private theorem fold_none (read : Nat → Option Value) (es : List AdministrativeInstruction) :
+    es.foldl (stackOp read) none = none := by
+  induction es with
+  | nil => rfl
+  | cons _ _ ih => exact ih
+
+private theorem fold_trap (read : Nat → Option Value) (es : List AdministrativeInstruction) :
+    es.foldl (stackOp read) (some .trap) = some .trap := by
+  induction es with
+  | nil => rfl
+  | cons _ _ ih => exact ih
+
+private theorem fold_trap_context (read : Nat → Option Value) (pre : List Value)
+    (tail : List AdministrativeInstruction) (z : Option Result) :
+    (vToEList pre ++ .trap :: tail).foldl (stackOp read) z = stackOp read z .trap := by
+  induction pre generalizing z with
+  | nil =>
+    cases z with
+    | none => exact fold_none read tail
+    | some r => cases r <;> exact fold_trap read tail
+  | cons v pre ih =>
+    change (vToEList pre ++ .trap :: tail).foldl (stackOp read) (stackOp read z (.basic (.const v))) = _
+    rw [ih]
+    rcases z with _ | (_ | _) <;> rfl
+
+private theorem const_step {tc : TContext} {read : Nat → Option Value}
+    {s s' : StoreRecord} {f f' : Frame} {es es' : List AdministrativeInstruction}
+    (r : Reduce s f es s' f' es') (hc : es.all (constResidual tc) = true)
+    (hg : ∀ i, i < tc.global.length → read i = sglobVal s f.inst i) :
+    s' = s ∧ f' = f ∧ es'.all (constResidual tc) = true ∧
+      ∀ z, es.foldl (stackOp read) z = es'.foldl (stackOp read) z := by
+  induction r with
+  | simple h =>
+    cases h with
+    | binopSuccess h1 h2 hop h | binopFailure h1 h2 hop h =>
+      refine ⟨rfl, rfl, rfl, fun z => ?_⟩
+      rcases z with _ | (_ | _) <;> simp [List.foldl, stackOp, h1, h2, hop, h]
+    | trap _ _ fill =>
+      rw [lfilled_Ind_Equivalent] at fill
+      cases fill with
+      | lfilledBase bef _ aft hpre =>
+        obtain ⟨pre, rfl⟩ := Wasm.const_es_exists hpre
+        exact ⟨rfl, rfl, rfl, fun z => by
+          simpa only [List.append_assoc, List.singleton_append, List.foldl_cons, List.foldl_nil]
+            using fold_trap_context read pre aft z⟩
+    | _ => simp [constResidual, constExpr] at hc
+  | getGlobal h =>
+    simp [constResidual, constExpr] at hc
+    refine ⟨rfl, rfl, rfl, fun z => ?_⟩
+    rcases z with _ | (_ | _) <;> simp [List.foldl, stackOp, hg _ hc.1, h]
+  | label es es' _ _ _ fill fill' ih =>
+    rw [lfilled_Ind_Equivalent] at fill fill'
+    cases fill with
+    | lfilledBase bef _ aft _ =>
+      cases fill'
+      simp only [List.all_append, Bool.and_eq_true] at hc
+      obtain ⟨hs, hf, hc', h⟩ := ih hc.1.2 hg
+      exact ⟨hs, hf, by simp [hc.1.1, hc', hc.2], fun z => by simp only [List.foldl_append, h]⟩
+    | lfilledRec => simp [constResidual] at hc
+  | _ => simp [constResidual, constExpr] at hc
+
+private theorem const_path {tc : TContext} {read : Nat → Option Value}
+    {x y : StoreRecord × Frame × List AdministrativeInstruction}
+    (r : ReduceTrans x y) (hc : x.2.2.all (constResidual tc) = true)
+    (hg : ∀ i, i < tc.global.length → read i = sglobVal x.1 x.2.1.inst i) :
+    y.1 = x.1 ∧ y.2.1 = x.2.1 ∧ y.2.2.all (constResidual tc) = true ∧
+      ∀ z, x.2.2.foldl (stackOp read) z = y.2.2.foldl (stackOp read) z := by
+  induction r with
+  | refl => exact ⟨rfl, rfl, hc, fun _ => rfl⟩
+  | @tail b c _ step ih =>
+    obtain ⟨s, f, es⟩ := b
+    obtain ⟨s', f', es'⟩ := c
+    obtain ⟨hs, hf, he, eq⟩ := ih
+    change s = _ at hs
+    change f = _ at hf
+    obtain ⟨hs', hf', he', eq'⟩ := const_step (s := s) (f := f) step he (by rwa [hs, hf])
+    exact ⟨hs'.trans hs, hf'.trans hf, he', fun z => (eq z).trans (eq' z)⟩
+
+/-- A constant initializer evaluates to the same value in stores agreeing on visible globals. -/
+private theorem const_init_det {tc : TContext} {es : List BasicInstruction}
     {s1 s2 : StoreRecord} {inst : Instance} {v1 v2 : Value}
-    (hc : constExprs tc es = true) (hbet : BeTyping tc es (.tf [] [t]))
+    (hc : constExprs tc es = true)
     (hs : ∀ i, i < tc.global.length → sglobVal s1 inst i = sglobVal s2 inst i)
     (h1 : ReduceTrans (s1, ⟨[], inst⟩, toEList es) (s1, ⟨[], inst⟩, [.basic (.const v1)]))
     (h2 : ReduceTrans (s2, ⟨[], inst⟩, toEList es) (s2, ⟨[], inst⟩, [.basic (.const v2)])) :
     v1 = v2 := by
-  obtain ⟨e, rfl, he⟩ := const_exprs_impl hc hbet
-  cases e <;> simp [constExpr] at he
-  · rename_i k
-    have g1 := reduce_trans_get_global h1
-    have g2 := reduce_trans_get_global h2
-    simp only at g1 g2
-    rw [hs k he.1, g2] at g1
-    exact (Option.some.inj g1).symm
-  · exact (reduce_trans_const h1).symm.trans (reduce_trans_const h2)
+  have h : (toEList es).all (constResidual tc) = true := by
+    simpa [toEList, List.all_map, Function.comp_def, constResidual, constExprs] using hc
+  have p := (const_path (read := sglobVal s1 inst) h1 h (fun _ _ => rfl)).2.2.2 (some (.values []))
+  have q := (const_path h2 h hs).2.2.2 (some (.values []))
+  simpa [List.foldl, stackOp] using p.symm.trans q
 
-@[rocq_alias iriswasm.module_glob_init_det]
+private theorem globals_init_det {s₁ s₂ : StoreRecord} {inst : Instance} {c : TContext}
+    {gs : List ModuleGlob} {ts : List GlobalType} (ht : ModuleGlobalsTyping c gs ts) :
+    ∀ {vs ws : List Value},
+      Wasm.List.Forall₂ (fun (g : ModuleGlob) v =>
+        ReduceTrans (s₁, ⟨[], inst⟩, toEList g.init) (s₁, ⟨[], inst⟩, [.basic (.const v)])) gs vs →
+      Wasm.List.Forall₂ (fun (g : ModuleGlob) w =>
+        ReduceTrans (s₂, ⟨[], inst⟩, toEList g.init) (s₂, ⟨[], inst⟩, [.basic (.const w)])) gs ws →
+      (∀ i, i < c.global.length → sglobVal s₁ inst i = sglobVal s₂ inst i) →
+      (∀ j, j < gs.length → vs[j]? = ws[j]? →
+        sglobVal s₁ inst (c.global.length + j) = sglobVal s₂ inst (c.global.length + j)) →
+      vs = ws := by
+  induction ht with
+  | nil => intro vs ws h₁ h₂ _ _; cases h₁; cases h₂; rfl
+  | @cons c g t gs ts head _ ih =>
+    intro vs ws h₁ h₂ hs hlocal
+    cases h₁ with | cons r₁ tail₁ =>
+    cases h₂ with | cons r₂ tail₂ =>
+    obtain rfl := const_init_det head.1 hs r₁ r₂
+    congr 1
+    refine ih tail₁ tail₂ (fun i hi => ?_) (fun j hj he => ?_)
+    · by_cases h : i < c.global.length
+      · exact hs i h
+      · simp only [List.length_append, List.length_singleton] at hi
+        have : i = c.global.length := by omega
+        subst i; simpa using hlocal 0 (by simp) rfl
+    · simpa [Nat.add_assoc, Nat.add_comm 1] using
+        hlocal (j + 1) (by simpa using hj) (by simpa using he)
+
+#rocq_ignore iriswasm.module_glob_init_det "earlier defined globals are visible to initializers"
 theorem module_glob_init_det {m : Module} {v_imps t_imps : List ExternT} {inst : Instance}
     {s1 s2 : StoreRecord} {gi1 gi2 : List Value} (hmt : ModuleTyping m v_imps t_imps)
     (h1 : InstantiateGlobals inst s1 m gi1) (h2 : InstantiateGlobals inst s2 m gi2)
-    (hs : ∀ i, i < (extTGlobs v_imps).length → sglobVal s1 inst i = sglobVal s2 inst i) :
-    gi1 = gi2 := by
-  obtain ⟨fts, gts, hmt⟩ := hmt
-  rcases m with ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩
-  obtain ⟨-, -, -, hg, -⟩ := hmt
-  refine forall2_det h1 h2 fun g hg' v1 v2 r1 r2 => ?_
-  obtain ⟨tg, hc, -, hbet⟩ := forall2_mem_left hg g hg'
-  exact const_init_det hc hbet hs r1 r2
+    (hs : ∀ i, i < (extTGlobs v_imps).length → sglobVal s1 inst i = sglobVal s2 inst i)
+    (hlocal : ∀ j, j < m.globals.length → gi1[j]? = gi2[j]? →
+      let i := (extTGlobs v_imps).length + j
+      sglobVal s1 inst i = sglobVal s2 inst i) : gi1 = gi2 := by
+  obtain ⟨_, _, h⟩ := hmt
+  exact globals_init_det h.2.2.2.1 h1 h2 hs hlocal
 
 @[rocq_alias iriswasm.module_elem_init_det]
 theorem module_elem_init_det {m : Module} {v_imps t_imps : List ExternT} {inst : Instance}
@@ -534,12 +595,11 @@ theorem module_elem_init_det {m : Module} {v_imps t_imps : List ExternT} {inst :
   refine forall2_det h1 h2 fun e he' c1 c2 r1 r2 => ?_
   have hty := he e he'
   rcases e with ⟨⟨t⟩, off, init⟩
-  obtain ⟨hc, hbet, -⟩ := hty
-  simpa using const_init_det hc hbet (fun _ _ => rfl) r1 r2
+  simpa using const_init_det hty.1 (fun _ _ => rfl) r1 r2
 
-@[rocq_alias iriswasm.module_data_init_det]
+#rocq_ignore iriswasm.module_data_init_det "active data offsets retain their address type"
 theorem module_data_init_det {m : Module} {v_imps t_imps : List ExternT} {inst : Instance}
-    {s : StoreRecord} {do1 do2 : List I32} (hmt : ModuleTyping m v_imps t_imps)
+    {s : StoreRecord} {do1 do2 : List AddressOperand} (hmt : ModuleTyping m v_imps t_imps)
     (h1 : InstantiateData inst s m do1) (h2 : InstantiateData inst s m do2) : do1 = do2 := by
   obtain ⟨fts, gts, hmt⟩ := hmt
   rcases m with ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩
@@ -547,8 +607,10 @@ theorem module_data_init_det {m : Module} {v_imps t_imps : List ExternT} {inst :
   refine forall2_det h1 h2 fun d hd' c1 c2 r1 r2 => ?_
   have hty := hd d hd'
   rcases d with ⟨⟨t⟩, off, init⟩
-  obtain ⟨hc, hbet, -⟩ := hty
-  simpa using const_init_det hc hbet (fun _ _ => rfl) r1 r2
+  dsimp only [ModuleDataTyping] at hty
+  split at hty
+  · exact hty.elim
+  · exact AddressOperand.value_inj.mp (const_init_det hty.1 (fun _ _ => rfl) r1 r2)
 
 @[rocq_alias iriswasm.vt_imps_comp_len]
 theorem vt_imps_comp_len {s : StoreRecord} {v_imps : List VExt} {t_imps : List ExternT}
@@ -616,17 +678,24 @@ theorem alloc_module_det {s : StoreRecord} {m : Module} {v_imps : List VExt}
   have hglob' : s_res2.globals = s.globals ++ (m.globals.zip g_inits').map (fun (mg, v) =>
       ({ mut_ := mg.type.mut_, val := v } : Global)) := by rw [bg2, ← bm5, ← bt5, ← bf5]
   have hgi : g_inits = g_inits' := by
-    refine module_glob_init_det hmt hinitg1 hinitg2 fun i hi => ?_
-    rw [← (vt_imps_comp_len hext).2.2.2] at hi
-    obtain ⟨⟨n⟩, hn⟩ : ∃ x, (extGlobs v_imps)[i]? = some x := ⟨_, List.getElem?_eq_getElem hi⟩
-    have hmem : ModuleExportDesc.global (.globalidx n) ∈ v_imps :=
-      List.mem_filterMap.1 (List.mem_of_getElem? hn) |>.elim fun x ⟨hx, he⟩ => by
-        cases x <;> simp at he; subst he; exact hx
-    obtain ⟨_, hty⟩ := forall2_mem_left hext _ hmem
-    have hn' : n < s.globals.length := by cases hty; assumption
-    simp only [sglobVal, sglob, sglobInd, hgl1, List.map_append]
-    rw [List.getElem?_append_left (by simpa using hi), List.getElem?_map, hn]
-    simp [optionBind, hglob, hglob', List.getElem?_append_left hn']
+    apply module_glob_init_det hmt hinitg1 hinitg2
+    · intro i hi
+      rw [← (vt_imps_comp_len hext).2.2.2] at hi
+      obtain ⟨⟨n⟩, hn⟩ : ∃ x, (extGlobs v_imps)[i]? = some x := ⟨_, List.getElem?_eq_getElem hi⟩
+      have hmem : ModuleExportDesc.global (.globalidx n) ∈ v_imps :=
+        List.mem_filterMap.1 (List.mem_of_getElem? hn) |>.elim fun x ⟨hx, he⟩ => by
+          cases x <;> simp at he; subst he; exact hx
+      obtain ⟨_, hty⟩ := forall2_mem_left hext _ hmem
+      have hn' : n < s.globals.length := by cases hty; assumption
+      simp only [sglobVal, sglob, sglobInd, hgl1, List.map_append]
+      rw [List.getElem?_append_left (by simpa using hi), List.getElem?_map, hn]
+      simp [optionBind, hglob, hglob', List.getElem?_append_left hn']
+    · intro j hj he
+      simp only [sglobVal, sglob, sglobInd, hgl1, List.map_append, ag1,
+        ← am5, ← at5, ← af5, ← (vt_imps_comp_len hext).2.2.2]
+      rw [List.getElem?_append_right (by simp)]
+      simp [gen_index_lookup _ _ _ hj, optionBind, hglob, hglob', List.getElem?_append_right,
+        List.zip, List.getElem?_zipWith, he]
   subst hgi
   refine ⟨by rw [hex1, hex2], rfl, ?_⟩
   rw [hf1] at hf2; cases hf2
@@ -649,7 +718,8 @@ theorem instantiate_det {s : StoreRecord} {m : Module} {vimps : List VExt}
   obtain ⟨rfl, rfl⟩ := Prod.mk.inj hie
   obtain rfl := module_elem_init_det hmt1 hie1 hie2
   obtain rfl := module_data_init_det hmt1 hid1 hid2
-  simp only [checkStart, decide_eq_true_eq] at hcs1 hcs2 hws1 hws2
-  rw [← hcs1, hcs2, hws1, hws2]
+  simp only [checkStart, decide_eq_true_eq] at hcs1 hcs2
+  obtain rfl := Except.ok.inj (hws1.symm.trans hws2)
+  rw [← hcs1, hcs2]
 
 end IrisWasm

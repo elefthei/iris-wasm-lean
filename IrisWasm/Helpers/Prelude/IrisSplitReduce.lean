@@ -131,77 +131,16 @@ private theorem reduce_trap_filled {s f les s' f' les'} (h : Reduce s f les s' f
     have hm : trap ∈ p ++ trap :: q := by simp
     rw [← heq] at hm
     simp at hm
-    all_goals subst_vars; simp [vToEList] at hm
+    all_goals first
+      | exact (const_not_mem_trap (by assumption) hm).elim
+      | (subst_vars; simp [vToEList] at hm)
 
 
-/-- Number of operand values an instruction pops when it reduces at the top level. -/
-private def needArgs (s : StoreRecord) : AdministrativeInstruction → Nat
-  | .basic (.unop ..) | .basic (.testop ..) | .basic (.cvtop ..) | .basic .drop
-  | .basic (.if_ ..) | .basic (.brIf _) | .basic (.brTable ..) | .basic (.teeLocal _)
-  | .basic (.setLocal _) | .basic (.setGlobal _) | .basic (.load ..) | .basic .growMemory
-  | .basic (.callIndirect _) => 1
-  | .basic (.binop ..) | .basic (.relop ..) | .basic (.store ..) => 2
-  | .basic .select => 3
-  | .basic (.block (.tf t1s _) _) | .basic (.loop (.tf t1s _) _) => t1s.length
-  | .invoke a =>
-    match s.funcs[a]? with
-    | some cl => match clType cl with | .tf t1s _ => t1s.length
-    | none => 0
-  | _ => 0
-
-private theorem reduce_needArgs {s f les s' f' les'} (h : Reduce s f les s' f' les') :
-    ∀ vs e, les = vs ++ [e] → constList vs = true → isConst e = false →
-    needArgs s e ≤ vs.length := by
-  induction h with
-  | @simple e' e'' s f hs =>
-    intro vs e heq hvs he
-    have h1 := congrArg List.dropLast heq
-    have h2 := congrArg List.getLast? heq
-    cases hs with
-    | trap lh _ hl =>
-      obtain ⟨p, q, -, hp, rfl⟩ := lfilled0_iff.1 hl
-      have h' : p ++ trap :: q = vs ++ e :: [] := by rw [← heq]; simp
-      obtain ⟨-, rfl, -⟩ := first_nonconst_unique h' hp hvs rfl he
-      simp [needArgs]
-    | _ =>
-      simp at h1 h2
-      subst_vars
-      simp_all [needArgs]
-  | @label s f es les s' f' es' les' k lh hr hl hl' ih =>
-    intro vs e heq hvs he
-    cases k with
-    | zero =>
-      obtain ⟨bef, aft, rfl, hbef, rfl⟩ := lfilled0_iff.1 hl
-      obtain ⟨p2, x, q2, rfl, hp2, hx⟩ := exists_first_nonconst (reduce_not_const hr)
-      have h' : (bef ++ p2) ++ x :: (q2 ++ aft) = vs ++ e :: [] := by rw [← heq]; simp
-      obtain ⟨rfl, rfl, hq⟩ :=
-        first_nonconst_unique h' (by simp [constList_append, hbef, hp2]) hvs hx he
-      obtain ⟨rfl, rfl⟩ := List.append_eq_nil_iff.1 hq
-      have := ih p2 x (by simp) hp2 hx
-      simp only [List.length_append]
-      omega
-    | succ k =>
-      rw [lfilled_Ind_Equivalent] at hl
-      cases hl with
-      | lfilledRec _ vs0 n es0 lh' es'' _ LI hvs0 _ =>
-        have h' : vs0 ++ AdministrativeInstruction.label n es0 LI :: es'' = vs ++ e :: [] := by
-          rw [← heq]; simp
-        obtain ⟨-, rfl, -⟩ := first_nonconst_unique h' hvs0 hvs rfl he
-        simp [needArgs]
-  | _ =>
-    intro vs e heq hvs he
-    have h1 := congrArg List.dropLast heq
-    have h2 := congrArg List.getLast? heq
-    simp at h1 h2
-    subst_vars
-    simp_all [needArgs, clType, vToEList]
-
-
-/-- A top-level redex `l` (popping `needArgs` operands) cannot be `v :: es` with `es` reducible. -/
+/-- An exact redex cannot lose its first operand and still reduce. -/
 private theorem reduce_ves_direct {s f es s0 f0 es0} (hes : Reduce s f es s0 f0 es0) {v : Value}
     {l : List AdministrativeInstruction} (hl : l ≠ []) (heq : l = basic (.const v) :: es)
     (hvs : constList l.dropLast = true) (he : isConst (l.getLast hl) = false)
-    (hn : l.dropLast.length ≤ needArgs s (l.getLast hl)) : False := by
+    (hn : l.dropLast.length ≤ redexArity s f (l.getLast hl)) : False := by
   have heq' := (List.dropLast_concat_getLast hl).trans heq
   generalize l.dropLast = vs at heq' hvs hn
   generalize l.getLast hl = e at heq' he hn
@@ -214,7 +153,7 @@ private theorem reduce_ves_direct {s f es s0 f0 es0} (hes : Reduce s f es s0 f0 
     simp only [List.cons_append, List.cons.injEq] at heq'
     obtain ⟨rfl, rfl⟩ := heq'
     simp only [constList, List.all_cons, Bool.and_eq_true] at hvs
-    have := reduce_needArgs hes vs e rfl hvs.2 he
+    have := redexArity_le hes hvs.2 he
     simp only [List.length_cons] at hn
     omega
 
@@ -347,7 +286,7 @@ private theorem reduce_ves_core {s f les s' f' les'} (h : Reduce s f les s' f' l
     | _ =>
       exfalso
       exact reduce_ves_direct hes (by simp) heq (by clear heq; simp_all [constList, isConst])
-        (by simp [isConst]) (by clear heq; simp_all [needArgs])
+        (by simp [isConst]) (by clear heq; simp_all [redexArity])
   | @label s f ces les s' f' ces' les' k lh hr hl hl' ih =>
     intro v es heq ⟨s0, f0, es0, hes⟩
     cases k with
@@ -419,7 +358,7 @@ private theorem reduce_ves_core {s f les s' f' les'} (h : Reduce s f les s' f' l
     exfalso
     exact reduce_ves_direct hes (by simp) heq
       (by clear heq; subst_vars; simp_all [constList, isConst, vToEList])
-      (by simp [isConst]) (by clear heq; subst_vars; simp_all [needArgs, clType, vToEList])
+      (by simp [isConst]) (by clear heq; subst_vars; simp_all [redexArity, clType, vToEList])
 
 end helpers
 

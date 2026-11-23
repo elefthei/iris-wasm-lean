@@ -1,0 +1,52 @@
+{
+  "harness": "28ecb9af6d2040e474a70f7cb7f43666740141fb",
+  "corpora": {"converted": "d2b8c296df2e209acbdd0d901d14dd7085acd178", "deployed": "6fca707686ed4f36a1e30ec2ae7d3dd32b276704"},
+  "sources": {
+    "features": "https://github.com/wasm3/wasm3/blob/28ecb9af6d2040e474a70f7cb7f43666740141fb/README.md#features",
+    "commands": "https://github.com/wasm3/wasm3/blob/28ecb9af6d2040e474a70f7cb7f43666740141fb/test/run-spec-test.py#L560-L746",
+    "wire": "https://github.com/wasm3/wasm3/blob/28ecb9af6d2040e474a70f7cb7f43666740141fb/platforms/app/main.c"
+  },
+  "profiles": {
+    "atomics": {"version": "v0.9.1-beta.1", "features": ["tail-call", "typed-refs", "multi-memory", "guarded-mem", "uvwasi"], "sha256": "3d6d56112f38e87ce41fcd17d88b15646ebf0672fe44ff2ffdc2ab10df9edbb8"},
+    "none": {"version": "v0.9.2", "features": ["tail-call", "typed-refs", "multi-memory", "wide-arithmetic", "atomics", "guarded-mem", "snapshots", "wasi"], "source_build": true}
+  },
+  "memory64_cap": "Eager instantiation exceeds the oracle's 65536-page linear-memory implementation limit (pinned source/m3_config.h:23–24; source/m3_env.c:1080–1085).",
+  "features": [
+    {"token": "v128(?:\\..+)?|(?:i8x16|i16x8|i32x4|i64x2|f32x4|f64x2)\\..+", "reason": "no fixed-width SIMD or relaxed SIMD execution or v128 value type"},
+    {"token": "struct|structref|array|arrayref|any|anyref|eq|eqref|i31|i31ref|none|nullref|(?:array|struct|i31)\\..+|ref\\.(?:i31|eq|test|cast)(?:_null)?|br_on_cast(?:_fail)?|any\\.convert_extern|extern\\.convert_any", "reason": "no GC composite types, abstract heap types, casts, or operations"},
+    {"token": "br_on_(?:non_)?null", "reason": "typed refs do not implement the branch-on-null opcodes (runner lines 638–644)"}
+  ],
+  "commands": [
+    {"script": "witnesses.json", "corpus": "witnesses", "instances": ["wide_instance"], "reason": "The required 65537 pages exceed d_m3MaxLinearMemoryPages=65536. The REPL and --validate-only both instantiate. See pinned source/m3_config.h:23–24 and platforms/app/main.c:1422–1442."},
+    {"script": "float_exprs.json", "fields": ["f32.nonarithmetic_nan_bitpattern*"], "reason": "the shared f64 register quiets signaling f32 NaNs before reinterpretation"},
+    {"script": "imports.json", "files": ["imports.177.wasm"], "reason": "the linker leaves unknown host imports unresolved"},
+    {"script": "exceptions/try_table.json", "fields": ["catch-imported", "catch-imported-alias"], "reason": "imported tags are fresh, not linked to the exported tag identity"},
+    {"script": "exceptions/try_table.json", "files": ["try_table.13.wasm"], "reason": "typed tag payload and exn heap-type combination unsupported by the oracle"},
+    {"script": "local_init.json", "files": ["local_init.0.wasm", "local_init.1.wasm", "local_init.2.wasm", "local_init.4.wasm", "local_init.5.wasm"], "reason": "validator does not track definite initialization of non-defaultable locals"},
+    {"script": "ref_null.json", "files": ["ref_null.0.wasm", "ref_null.1.wasm"], "reason": "abstract GC and exception heap type encodings are only partially supported"},
+    {"script": "ref_is_null.json", "files": ["ref_is_null.0.wasm"], "reason": "abstract GC and exception heap type encodings are only partially supported"},
+    {"script": "type-rec.json", "files": ["type-rec.17.wasm", "type-rec.18.wasm", "type-rec.19.wasm"], "reason": "recursive groups with GC types cannot be represented by the engine"},
+    {"script": "type-rec.json", "files": ["type-rec.16.wasm"], "reason": "linking a function import does not compare closed recursive group types"},
+    {"script": "type-equivalence.json", "files": ["type-equivalence.8.wasm", "type-equivalence.9.wasm"], "reason": "recursive groups with GC types cannot be represented by the engine"},
+    {"script": "exceptions/tag.json", "files": ["tag.6.wasm", "tag.7.wasm"], "reason": "the linker does not check imported tag types"},
+    {"script": "exceptions/tag.json", "files": ["tag.2.wasm", "tag.3.wasm"], "reason": "stack-switching control tags admit non-empty result types"},
+    {"script": "imports.json", "files": ["imports.41.wasm", "imports.42.wasm", "imports.43.wasm", "imports.44.wasm", "imports.45.wasm"], "reason": "the linker neither resolves nor checks imported tags"},
+    {"script": "instance.json", "files": ["instance.2.wasm", "instance.4.wasm"], "reason": "known cross-instance multi-memory alias limitations in these two loads (runner lines 677–679)"},
+    {"script": "global.json", "files": ["global.50.wasm"], "reason": "global.get in constant expressions only permits imported globals"},
+    {"script": "table.json", "files": ["table.33.wasm"], "fields": ["get4", "get5"], "reason": "initialization from an imported ref global fills the table with null"},
+    {"script": "br_table.json", "fields": ["meet-funcref*"], "corpus": "converted", "reason": "historical WABT numeric funcref placeholder is not a wasm3 process handle (runner line 689)"},
+    {"script": "select.json", "fields": ["join-funcnull"], "args": [{"type": "i32", "value": "1"}], "corpus": "converted", "reason": "historical WABT numeric funcref placeholder is not a wasm3 process handle (runner line 690)"},
+    {"script": "func.json", "files": ["func.21.wasm"], "reason": "validator reasons in storage types rather than reference nullability"},
+    {"script": "br_if.json", "files": ["br_if.30.wasm"], "reason": "validator reasons in storage types rather than reference nullability"},
+    {"script": "local_tee.json", "files": ["local_tee.36.wasm"], "reason": "validator reasons in storage types rather than reference nullability"},
+    {"script": "ref_as_non_null.json", "files": ["ref_as_non_null.1.wasm"], "reason": "validator reasons in storage types rather than reference nullability"}
+  ],
+  "wire": {
+    "registration": "unrepresentable registry name: the C REPL takes a raw whitespace-delimited token in a 32-byte buffer",
+    "name": "embedded NUL in UTF-8 name would truncate the oracle's C string",
+    "values": "no upstream scalar token encoding for this argument type",
+    "length": "the C REPL accepts only 2047 bytes and 31 tokens per command line",
+    "definition": "no definition-only oracle verdict; retain bytes for actual instance requests",
+    "text": "text parsing happens in the pinned reference frontend, not either binary decoder"
+  }
+}

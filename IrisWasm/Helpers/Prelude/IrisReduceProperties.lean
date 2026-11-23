@@ -5,6 +5,7 @@ Authors: Iris-Wasm Lean port contributors
 -/
 import IrisWasm.Helpers.Prelude.IrisWasmLangProperties
 import IrisWasm.Helpers.Prelude.IrisLfilledProperties
+import IrisWasm.Helpers.IrisReductionCore
 
 /-! Port of `theories/iris/helpers/prelude/iris_reduce_properties.v`. -/
 
@@ -117,11 +118,9 @@ macro_rules
            first
              | exact hne rfl
              | exact absurd (IrisWasm.lfilled_zero_singleton_mem hfill) (by simp)
-         | block => exact IrisWasm.no_reduce_snoc hL (by simp)
-         | loop => exact IrisWasm.no_reduce_snoc hL (by simp)
          | _ => first | (cases hL; done) | (simp at hL; done)
-       | invokeNative => intro hL; exact IrisWasm.no_reduce_snoc hL (by simp)
-       | invokeHost => intro hL; exact IrisWasm.no_reduce_snoc hL (by simp)
+       | block | loop | invokeNative | invokeHost =>
+         intro hL; exact IrisWasm.no_reduce_snoc hL (by simp)
        | label _ _ _ _ hsub hfill _ ih =>
          intro hL
          subst hL
@@ -212,24 +211,24 @@ theorem test_no_reduce3 {s : StoreRecord} {f : Frame} {v1 v2 v3 : Value} {s' : S
 @[rocq_alias iriswasm.reduce_load_false]
 theorem reduce_load_false {s0 : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
     {es es' : List AdministrativeInstruction} {x0 : ValueType} {x1 : Option (PackedType × Sx)}
-    {x2 : AlignmentExponent} {x3 : StaticOffset} :
-    es = [.basic (.load x0 x1 x2 x3)] → Reduce s0 f es s' f' es' → False := by
+    {ma : MemArg} :
+    es = [.basic (.load x0 x1 ma)] → Reduce s0 f es s' f' es' → False := by
   intro Heq Hred
   no_reduce Heq Hred
 
 @[rocq_alias iriswasm.reduce_store_false]
 theorem reduce_store_false {s0 : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
     {es es' : List AdministrativeInstruction} {x0 : ValueType} {x1 : Option PackedType}
-    {x2 : AlignmentExponent} {x3 : StaticOffset} :
-    es = [.basic (.store x0 x1 x2 x3)] → Reduce s0 f es s' f' es' → False := by
+    {ma : MemArg} :
+    es = [.basic (.store x0 x1 ma)] → Reduce s0 f es s' f' es' → False := by
   intro Heq Hred
   no_reduce Heq Hred
 
 @[rocq_alias iriswasm.reduce_store_false_2]
 theorem reduce_store_false_2 {s0 : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
     {es es' : List AdministrativeInstruction} {x0 : ValueType} {x1 : Option PackedType}
-    {x2 : AlignmentExponent} {x3 : StaticOffset} {v : Value} :
-    es = [.basic (.const v), .basic (.store x0 x1 x2 x3)] → Reduce s0 f es s' f' es' → False := by
+    {ma : MemArg} {v : Value} :
+    es = [.basic (.const v), .basic (.store x0 x1 ma)] → Reduce s0 f es s' f' es' → False := by
   intro Heq Hred
   no_reduce Heq Hred
 
@@ -302,77 +301,25 @@ theorem snoc_frame {s : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
     simp only [constList, List.all_append, Bool.and_eq_true] at hc
     exact (values_no_reduce hred hc.1.2).elim
 
-@[rocq_alias iriswasm.block_not_enough_arguments_no_reduce]
 theorem block_not_enough_arguments_no_reduce {s : StoreRecord} {f : Frame}
-    {vs : List AdministrativeInstruction} {t1s t2s : List ValueType} {esb : List BasicInstruction}
+    {vs : List AdministrativeInstruction} {bt : BlockType} {t1s t2s : List ValueType}
+    {esb : List BasicInstruction}
     {s' : StoreRecord} {f' : Frame} {es' : List AdministrativeInstruction} :
-    Reduce s f (vs ++ [.basic (.block (.tf t1s t2s) esb)]) s' f' es' → constList vs = true →
+    expandBlockType f.inst.types bt = some (.tf t1s t2s) →
+    Reduce s f (vs ++ [.basic (.block bt esb)]) s' f' es' → constList vs = true →
       vs.length < t1s.length → False := by
-  intro H hc hlen
-  generalize hL : vs ++ [AdministrativeInstruction.basic (.block (.tf t1s t2s) esb)] = es at H
-  induction H generalizing vs with
-  | simple hs =>
-    cases hs with
-    | block n hc' hn ht1 _ =>
-      obtain ⟨rfl, h2⟩ := List.append_inj' hL rfl
-      simp only [List.cons.injEq, AdministrativeInstruction.basic.injEq,
-        BasicInstruction.block.injEq, FunctionType.tf.injEq, and_true] at h2
-      obtain ⟨⟨rfl, rfl⟩, rfl⟩ := h2
-      omega
-    | trap lh hne hfill =>
-      subst hL
-      have hm := lfilled_zero_singleton_mem hfill
-      simp only [List.mem_append, List.mem_singleton, reduceCtorEq, or_false] at hm
-      exact not_mem_const hc hm rfl
-    | _ => have h := congrArg List.getLast? hL; simp at h
-  | label es0 es0' k lh hsub hf hf' ih =>
-    subst hL
-    cases k with
-    | succ k =>
-      obtain ⟨_, _, _, hm⟩ := lfilled_succ_label_mem hf
-      simp only [List.mem_append, List.mem_singleton, reduceCtorEq, or_false] at hm
-      exact not_mem_const hc hm rfl
-    | zero =>
-      obtain ⟨bef, aft, rfl, _, h⟩ := lfilled_zero_inv hf
-      obtain ⟨es1, rfl, hc1, hl1⟩ := snoc_frame hc h.symm hsub
-      exact ih hc1 (by omega) rfl
-  | _ => have h := congrArg List.getLast? hL; simp at h
+  intro hsig hr hc hlt
+  exact (Nat.not_lt_of_ge (by simpa [redexArity, hsig] using redexArity_le hr hc rfl)) hlt
 
-@[rocq_alias iriswasm.loop_not_enough_arguments_no_reduce]
 theorem loop_not_enough_arguments_no_reduce {s : StoreRecord} {f : Frame}
-    {vs : List AdministrativeInstruction} {t1s t2s : List ValueType} {esb : List BasicInstruction}
+    {vs : List AdministrativeInstruction} {bt : BlockType} {t1s t2s : List ValueType}
+    {esb : List BasicInstruction}
     {s' : StoreRecord} {f' : Frame} {es' : List AdministrativeInstruction} :
-    Reduce s f (vs ++ [.basic (.loop (.tf t1s t2s) esb)]) s' f' es' → constList vs = true →
+    expandBlockType f.inst.types bt = some (.tf t1s t2s) →
+    Reduce s f (vs ++ [.basic (.loop bt esb)]) s' f' es' → constList vs = true →
       vs.length < t1s.length → False := by
-  intro H hc hlen
-  generalize hL : vs ++ [AdministrativeInstruction.basic (.loop (.tf t1s t2s) esb)] = es at H
-  induction H generalizing vs with
-  | simple hs =>
-    cases hs with
-    | loop m hc' hn ht1 _ =>
-      obtain ⟨rfl, h2⟩ := List.append_inj' hL rfl
-      simp only [List.cons.injEq, AdministrativeInstruction.basic.injEq,
-        BasicInstruction.loop.injEq, FunctionType.tf.injEq, and_true] at h2
-      obtain ⟨⟨rfl, rfl⟩, rfl⟩ := h2
-      omega
-    | trap lh hne hfill =>
-      subst hL
-      have hm := lfilled_zero_singleton_mem hfill
-      simp only [List.mem_append, List.mem_singleton, reduceCtorEq, or_false] at hm
-      exact not_mem_const hc hm rfl
-    | _ => have h := congrArg List.getLast? hL; simp at h
-  | label es0 es0' k lh hsub hf hf' ih =>
-    subst hL
-    cases k with
-    | succ k =>
-      obtain ⟨_, _, _, hm⟩ := lfilled_succ_label_mem hf
-      simp only [List.mem_append, List.mem_singleton, reduceCtorEq, or_false] at hm
-      exact not_mem_const hc hm rfl
-    | zero =>
-      obtain ⟨bef, aft, rfl, _, h⟩ := lfilled_zero_inv hf
-      obtain ⟨es1, rfl, hc1, hl1⟩ := snoc_frame hc h.symm hsub
-      exact ih hc1 (by omega) rfl
-  | _ => have h := congrArg List.getLast? hL; simp at h
+  intro hsig hr hc hlt
+  exact (Nat.not_lt_of_ge (by simpa [redexArity, hsig] using redexArity_le hr hc rfl)) hlt
 
 @[rocq_alias iriswasm.v_to_e_length]
 theorem v_to_e_length (vs : List Value) : (vToEList vs).length = vs.length := by
@@ -524,11 +471,8 @@ theorem AI_trap_reduce_det {v : Value} {ws : StoreRecord} {f : Frame} {ws' : Sto
   | simple hs =>
     cases hs with
     | trap => rfl
-    | block => exact (no_reduce_snoc hL.symm (by simp)).elim
-    | loop => exact (no_reduce_snoc hL.symm (by simp)).elim
     | _ => first | (cases hL; done) | (simp at hL; done)
-  | invokeNative => exact (no_reduce_snoc hL.symm (by simp)).elim
-  | invokeHost => exact (no_reduce_snoc hL.symm (by simp)).elim
+  | block | loop | invokeNative | invokeHost => exact (no_reduce_snoc hL.symm (by simp)).elim
   | label es0 es0' k lh hsub hf hf' ih =>
     subst hL
     cases k with
@@ -615,7 +559,6 @@ private theorem trap_reduce_aux {s : StoreRecord} {f : Frame} {es : List Adminis
       obtain ⟨rfl, -, rfl⟩ := first_values _ _ _ _ _ _ rfl rfl hc hb hL
       refine ⟨0, es2.length, ⟨?_, by omega, by omega⟩, by simp, rfl⟩
       cases vs1 <;> cases es2 <;> simp_all <;> omega
-    | block _ hcv | loop _ hcv => simp at hm; exact (not_mem_const hcv hm rfl).elim
     | teeLocal hv => simp at hm; subst hm; simp [isConst] at hv
     | _ => simp at hm
   | label es0 es0' k lh hsub hf hf' ih =>
@@ -641,6 +584,7 @@ private theorem trap_reduce_aux {s : StoreRecord} {f : Frame} {es : List Adminis
       hL ▸ List.mem_append_right vs1 List.mem_cons_self
     first
       | (simp at hm; done)
+      | (simp at hm; exact (not_mem_const (by assumption) hm rfl).elim)
       | (subst_vars; simp [vToEList] at hm)
 
 @[rocq_alias iriswasm.trap_reduce_length]
@@ -871,7 +815,6 @@ private theorem br_no_reduce_aux {s : StoreRecord} {f : Frame} {es : List Admini
     | trap lh hne hfill =>
       obtain ⟨bef, aft, rfl, hb, rfl⟩ := lfilled_zero_inv hfill
       cases (first_values _ _ _ _ _ _ rfl rfl hc hb hL).2.1
-    | block _ hcv | loop _ hcv => simp at hm; exact not_mem_const hcv hm rfl
     | teeLocal hv => simp at hm; subst hm; simp [isConst] at hv
     | _ => simp at hm
   | label es0 es0' k lh hsub hf hf' ih =>
@@ -893,6 +836,7 @@ private theorem br_no_reduce_aux {s : StoreRecord} {f : Frame} {es : List Admini
       hL ▸ List.mem_append_right vs1 List.mem_cons_self
     first
       | (simp at hm; done)
+      | (simp at hm; exact not_mem_const (by assumption) hm rfl)
       | (subst_vars; simp [vToEList] at hm)
 
 @[rocq_alias iriswasm.br_no_reduce]
@@ -1039,7 +983,6 @@ private theorem det_label_aux {ws : StoreRecord} {f : Frame} {L : List Administr
     | trap lh0 hne hfill =>
       obtain ⟨bef, aft, rfl, hb, rfl⟩ := lfilled_zero_inv hfill
       cases (first_values _ _ _ _ _ _ rfl rfl hc hb hL).2.1
-    | block _ hcv | loop _ hcv => simp at hm; exact not_mem_const hcv hm rfl
     | teeLocal hv' => simp at hm; subst hm; simp [isConst] at hv'
     | _ => simp at hm
   | label es0 es0' k lh hsub hf hf' ih =>
@@ -1069,6 +1012,7 @@ private theorem det_label_aux {ws : StoreRecord} {f : Frame} {L : List Administr
       hL ▸ List.mem_append_right l1 List.mem_cons_self
     first
       | (simp at hm; done)
+      | (simp at hm; exact not_mem_const (by assumption) hm rfl)
       | (subst_vars; simp [vToEList] at hm)
 
 /-- Core of `reduce_return_trap_label`. -/
@@ -1100,7 +1044,6 @@ private theorem return_trap_label_aux {s : StoreRecord} {f : Frame}
     | trap lh0 hne hfill =>
       obtain ⟨bef, aft, rfl, hb, rfl⟩ := lfilled_zero_inv hfill
       cases (first_values _ _ _ _ _ _ rfl rfl hc hb hL).2.1
-    | block _ hcv | loop _ hcv => simp at hm; exact (not_mem_const hcv hm rfl).elim
     | teeLocal hv' => simp at hm; subst hm; simp [isConst] at hv'
     | _ => simp at hm
   | label es1 es1' k lh hsub hf hf' ih =>
@@ -1139,6 +1082,7 @@ private theorem return_trap_label_aux {s : StoreRecord} {f : Frame}
       hL ▸ List.mem_append_right vs List.mem_cons_self
     first
       | (simp at hm; done)
+      | (simp at hm; exact not_mem_const (by assumption) hm rfl)
       | (subst_vars; simp [vToEList] at hm)
 
 @[rocq_alias iriswasm.reduce_return_trap_label]
@@ -1220,14 +1164,6 @@ private theorem trap_nested_aux {s : StoreRecord} {f : Frame} {es : List Adminis
       | succ k =>
         obtain ⟨_, h'⟩ := lfilled_succ_singleton h
         exact (lfilled_trap_not_br _ _ _ h' _ _ _ _ hcv hfill).elim
-    | block _ hcv | loop _ hcv =>
-      cases i with
-      | zero =>
-        have hm := lfilled_zero_singleton_mem h; simp at hm
-        exact (not_mem_const hcv hm rfl).elim
-      | succ k =>
-        obtain ⟨_, _, _, hm⟩ := lfilled_succ_label_mem h; simp at hm
-        exact (not_mem_const hcv hm rfl).elim
     | teeLocal hv =>
       cases i with
       | zero => have hm := lfilled_zero_singleton_mem h; simp at hm; subst hm; simp [isConst] at hv
@@ -1255,10 +1191,16 @@ private theorem trap_nested_aux {s : StoreRecord} {f : Frame} {es : List Adminis
     cases i with
     | zero =>
       have hm := lfilled_zero_singleton_mem h
-      first | (simp at hm; done) | (subst_vars; simp [vToEList] at hm)
+      first
+      | (simp at hm; done)
+      | (simp at hm; exact not_mem_const (by assumption) hm rfl)
+      | (subst_vars; simp [vToEList] at hm)
     | succ k =>
       obtain ⟨_, _, _, hm⟩ := lfilled_succ_label_mem h
-      first | (simp at hm; done) | (subst_vars; simp [vToEList] at hm)
+      first
+      | (simp at hm; done)
+      | (simp at hm; exact not_mem_const (by assumption) hm rfl)
+      | (subst_vars; simp [vToEList] at hm)
 
 @[rocq_alias iriswasm.trap_reduce_state_eq]
 theorem trap_reduce_state_eq {i : Nat} {lh : Lholed} {es : List AdministrativeInstruction}

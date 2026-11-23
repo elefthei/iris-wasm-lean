@@ -179,13 +179,13 @@ variable {hlc : HasLC} {GF : BundledGFunctors} [WasmG hlc GF]
 possible step as soon as the first instruction is neither `grow_memory` nor `trap`. -/
 theorem reduce_det_first {e₁ e₂ : Expr} {x : AdministrativeInstruction} {k : Nat}
     (hred : ∀ ws fr, Reduce ws fr e₁ ws fr e₂) (hfi : firstInstr e₁ = some (x, k))
-    (hg : x ≠ .basic .growMemory) (ht : x ≠ .trap) :
+    (hg : ∀ idx, x ≠ .basic (.growMemory idx)) (ht : x ≠ .trap) :
     ∀ ws fr ws' fr' es', Reduce ws fr e₁ ws' fr' es' → ws' = ws ∧ fr' = fr ∧ es' = e₂ := by
   intro ws fr ws' fr' es' h
-  rcases reduce_det (hred ws fr) h with heq | ⟨i, hi⟩ | ⟨i1, _, _, hi, _⟩
+  rcases reduce_det (hred ws fr) h with heq | ⟨idx, i, hi⟩ | ⟨i1, _, _, hi, _⟩
   · simp only [Prod.mk.injEq] at heq
     exact ⟨heq.1.symm, heq.2.1.symm, heq.2.2.symm⟩
-  · rw [hfi] at hi; cases hi; exact absurd rfl hg
+  · rw [hfi] at hi; cases hi; exact absurd rfl (hg idx)
   · rw [hfi] at hi; cases hi; exact absurd rfl ht
 
 theorem firstInstr_const_basic {vs : List AdministrativeInstruction} {b : BasicInstruction}
@@ -311,41 +311,23 @@ theorem wp_det_step_equiv {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
 theorem wp_det_first_frame {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {e₁ e₂ : Expr} {f : Frame} {x : AdministrativeInstruction} {k : Nat}
     (hred : ∀ ws fr, Reduce ws fr e₁ ws fr e₂) (hfi : firstInstr e₁ = some (x, k))
-    (hg : x ≠ .basic .growMemory) (ht : x ≠ .trap) :
+    (hg : ∀ idx, x ≠ .basic (.growMemory idx)) (ht : x ≠ .trap) :
     ⊢ iprop(↪[frame] f -∗ ▷ (↪[frame] f -∗ WP e₂ @ s ; E {{ Φ }}) -∗ WP e₁ @ s ; E {{ Φ }}) :=
   wp_det_step_frame hred (reduce_det_first hred hfi hg ht)
 
-/-- `wp_det_step_frame` lifted through an evaluation context. -/
-theorem wp_ctx_det_step {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
-    {e₁ e₂ : Expr} {i : Nat} {lh : Lholed} {f : Frame} {x : AdministrativeInstruction} {k : Nat}
-    (hred : ∀ ws fr, Reduce ws fr e₁ ws fr e₂) (hfi : firstInstr e₁ = some (x, k))
-    (hg : x ≠ .basic .growMemory) (ht : x ≠ .trap) :
-    ⊢ iprop(↪[frame] f -∗ ▷ (↪[frame] f -∗ WP e₂ @ s ; E CTX i ; lh {{ Φ }}) -∗
-      WP e₁ @ s ; E CTX i ; lh {{ Φ }}) := by
-  unfold wpWasmCtx
-  iintro Hf H %LI %hLI
-  obtain ⟨LI', hLI'⟩ := lfilled_swap e₂ hLI
-  have hred' : ∀ ws fr, Reduce ws fr LI ws fr LI' :=
-    fun ws fr => Reduce.label e₁ e₂ i lh (hred ws fr) hLI hLI'
-  iapply wp_det_step_frame hred'
-    (reduce_det_first hred' (starts_with_lfilled x k e₁ i lh LI hfi hLI) hg ht) $$ Hf
-  inext
-  iintro Hf
-  iapply H $$ Hf %LI' %hLI'
-
-/-- `wp_det_step_frame` lifted through an evaluation context inside a local frame. -/
+/-- A nested frame supplies the active instance, independently of the owned outer frame. -/
 theorem wp_frame_ctx_det_step {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {e₁ e₂ : Expr} {i : Nat} {lh : Lholed} {n1 : Nat} {f1 f : Frame}
     {x : AdministrativeInstruction} {k : Nat}
-    (hred : ∀ ws fr, Reduce ws fr e₁ ws fr e₂) (hfi : firstInstr e₁ = some (x, k))
-    (hg : x ≠ .basic .growMemory) (ht : x ≠ .trap) :
+    (hred : ∀ ws, Reduce ws f1 e₁ ws f1 e₂) (hfi : firstInstr e₁ = some (x, k))
+    (hg : ∀ idx, x ≠ .basic (.growMemory idx)) (ht : x ≠ .trap) :
     ⊢ iprop(↪[frame] f -∗ ▷ (↪[frame] f -∗ WP e₂ @ s ; E FRAME n1 ; f1 CTX i ; lh {{ Φ }}) -∗
       WP e₁ @ s ; E FRAME n1 ; f1 CTX i ; lh {{ Φ }}) := by
   unfold wpWasmCtxFrame
   iintro Hf H %LI %hLI
   obtain ⟨LI', hLI'⟩ := lfilled_swap e₂ hLI
   have hred' : ∀ ws fr, Reduce ws fr [.local n1 f1 LI] ws fr [.local n1 f1 LI'] :=
-    fun ws _ => Reduce.local (Reduce.label e₁ e₂ i lh (hred ws f1) hLI hLI')
+    fun ws _ => Reduce.local (Reduce.label e₁ e₂ i lh (hred ws) hLI hLI')
   iapply wp_det_step_frame hred'
     (reduce_det_first hred'
       (first_instr_local _ _ _ _ _ (starts_with_lfilled x k e₁ i lh LI hfi hLI)) hg ht) $$ Hf
@@ -404,8 +386,7 @@ theorem reduce_label_trap {s f s' f'} {m : Nat} {ctx es' : List AdministrativeIn
       obtain ⟨-, -, rfl⟩ := filled_singleton _ _ _ _ hl' (by simp)
         (fun h => empty_no_reduce (h ▸ hr))
       exact (test_no_reduce_trap hr).elim
-  | invokeNative => have := congrArg List.getLast? hE; simp at this
-  | invokeHost => have := congrArg List.getLast? hE; simp at this
+  | invokeNative | invokeHost | block | loop => have := congrArg List.getLast? hE; simp at this
   | _ => simp at hE
 
 /-! #### Structural lemmas for contexts -/
@@ -615,21 +596,18 @@ theorem wp_br_ctx_nested {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n
   iintro Hf
   iapply H $$ Hf %LIr %hLIr
 
-@[rocq_alias iriswasm.wp_block]
 theorem wp_block {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {vs : List AdministrativeInstruction} {es : List BasicInstruction} {n m : Nat}
-    {t1s t2s : List ValueType} {f : Frame}
+    {bt : Wasm.BlockType} {t1s t2s : List ValueType} {f : Frame}
     (hvs : constList vs = true) (hlen1 : vs.length = n) (hlen2 : t1s.length = n)
-    (hlen3 : t2s.length = m) :
+    (hlen3 : t2s.length = m) (hsig : expandBlockType f.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f -∗
       ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.label m [] (vs ++ toEList es)] @ s ; E
         {{ v, Φ v }}) -∗
-      WP (vs ++ [.basic (.block (.tf t1s t2s) es)]) @ s ; E {{ v, Φ v }}) := by
-  have hred : ∀ ws fr, Reduce ws fr (vs ++ [.basic (.block (.tf t1s t2s) es)]) ws fr
-      [.label m [] (vs ++ toEList es)] :=
-    fun _ _ => .simple (.block n hvs hlen1 hlen2 hlen3)
-  exact wp_det_step_frame hred
-    (reduce_det_first hred (firstInstr_const_basic hvs (by simp)) (by simp) (by simp))
+      WP (vs ++ [.basic (.block bt es)]) @ s ; E {{ v, Φ v }}) := by
+  rw [← hlen3]
+  exact wp_det_step_at_frame (fun _ => .block hsig hvs (hlen1.trans hlen2.symm))
+    (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_label_value]
 theorem wp_label_value {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
@@ -692,30 +670,32 @@ theorem wp_val_return {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
   inext
   iexact H
 
-@[rocq_alias iriswasm.wp_block_ctx]
 theorem wp_block_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {i : Nat}
     {lh : Lholed} {vs : List AdministrativeInstruction} {t1s t2s : List ValueType}
-    {es : List BasicInstruction} {n m : Nat} {f0 : Frame}
+    {es : List BasicInstruction} {bt : Wasm.BlockType} {n m : Nat} {f0 : Frame}
     (hconst : constList vs = true) (hn : vs.length = n) (hn' : t1s.length = n)
-    (hm : t2s.length = m) :
+    (hm : t2s.length = m) (hsig : expandBlockType f0.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f0 -∗
       ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label m [] (vs ++ toEList es)] @ s ; E
         CTX i ; lh {{ Φ }}) -∗
-      WP (vs ++ [.basic (.block (.tf t1s t2s) es)]) @ s ; E CTX i ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (fun _ _ => .simple (.block n hconst hn hn' hm)) (firstInstr_const_basic hconst (by simp)) (by simp) (by simp)
+      WP (vs ++ [.basic (.block bt es)]) @ s ; E CTX i ; lh {{ Φ }}) := by
+  rw [← hm]
+  exact wp_ctx_det_step (fun _ => .block hsig hconst (hn.trans hn'.symm))
+    (firstInstr_const_basic hconst (by simp)) (by simp) (by simp)
 
-@[rocq_alias iriswasm.wp_block_local_ctx]
 theorem wp_block_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {i : Nat}
     {lh : Lholed} {vs : List AdministrativeInstruction} {t1s t2s : List ValueType}
-    {es : List BasicInstruction} {n m n1 : Nat} {f1 f0 : Frame}
+    {es : List BasicInstruction} {bt : Wasm.BlockType} {n m n1 : Nat} {f1 f0 : Frame}
     (hconst : constList vs = true) (hn : vs.length = n) (hn' : t1s.length = n)
-    (hm : t2s.length = m) :
+    (hm : t2s.length = m) (hsig : expandBlockType f1.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f0 -∗
       ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label m [] (vs ++ toEList es)] @ s ; E
         FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) -∗
-      WP (vs ++ [.basic (.block (.tf t1s t2s) es)]) @ s ; E FRAME n1 ; f1 CTX i ; lh
+      WP (vs ++ [.basic (.block bt es)]) @ s ; E FRAME n1 ; f1 CTX i ; lh
         {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (fun _ _ => .simple (.block n hconst hn hn' hm)) (firstInstr_const_basic hconst (by simp)) (by simp) (by simp)
+  rw [← hm]
+  exact wp_frame_ctx_det_step (fun _ => .block hsig hconst (hn.trans hn'.symm))
+    (firstInstr_const_basic hconst (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_ctx]
 theorem wp_br_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : Nat}
@@ -755,113 +735,121 @@ theorem wp_br_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n 
     (by simp) (by simp) $$ Hf
   iexact H
 
-@[rocq_alias iriswasm.wp_loop_ctx]
 theorem wp_loop_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {vs : List AdministrativeInstruction} {es : List BasicInstruction} {n m : Nat}
-    {t1s t2s : List ValueType} {i : Nat} {lh : Lholed} {f0 : Frame}
+    {bt : Wasm.BlockType} {t1s t2s : List ValueType} {i : Nat} {lh : Lholed} {f0 : Frame}
     (hvs : constList vs = true) (hn : vs.length = n) (hn' : t1s.length = n)
-    (hm : t2s.length = m) :
+    (hm : t2s.length = m) (hsig : expandBlockType f0.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label n [.basic (.loop (.tf t1s t2s) es)]
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label n [.basic (.loop bt es)]
         (vs ++ toEList es)] @ s ; E CTX i ; lh {{ Φ }}) -∗
-      WP (vs ++ [.basic (.loop (.tf t1s t2s) es)]) @ s ; E CTX i ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (fun _ _ => .simple (.loop m hvs hn hn' hm)) (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
+      WP (vs ++ [.basic (.loop bt es)]) @ s ; E CTX i ; lh {{ Φ }}) := by
+  rw [← hn']
+  exact wp_ctx_det_step (fun _ => .loop hsig hvs (hn.trans hn'.symm))
+    (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
 
-@[rocq_alias iriswasm.wp_loop_local_ctx]
 theorem wp_loop_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {vs : List AdministrativeInstruction} {es : List BasicInstruction} {n m : Nat}
-    {t1s t2s : List ValueType} {i : Nat} {lh : Lholed} {f0 : Frame} {n1 : Nat} {f1 : Frame}
+    {bt : Wasm.BlockType} {t1s t2s : List ValueType} {i : Nat} {lh : Lholed}
+    {f0 : Frame} {n1 : Nat} {f1 : Frame}
     (hvs : constList vs = true) (hn : vs.length = n) (hn' : t1s.length = n)
-    (hm : t2s.length = m) :
+    (hm : t2s.length = m) (hsig : expandBlockType f1.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label n [.basic (.loop (.tf t1s t2s) es)]
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.label n [.basic (.loop bt es)]
         (vs ++ toEList es)] @ s ; E FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) -∗
-      WP (vs ++ [.basic (.loop (.tf t1s t2s) es)]) @ s ; E FRAME n1 ; f1 CTX i ; lh
+      WP (vs ++ [.basic (.loop bt es)]) @ s ; E FRAME n1 ; f1 CTX i ; lh
         {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (fun _ _ => .simple (.loop m hvs hn hn' hm)) (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
+  rw [← hn']
+  exact wp_frame_ctx_det_step (fun _ => .loop hsig hvs (hn.trans hn'.symm))
+    (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
 
-@[rocq_alias iriswasm.wp_loop]
 theorem wp_loop {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
     {vs : List AdministrativeInstruction} {es : List BasicInstruction} {n m : Nat}
-    {t1s t2s : List ValueType} {f : Frame}
+    {bt : Wasm.BlockType} {t1s t2s : List ValueType} {f : Frame}
     (hvs : constList vs = true) (hn : vs.length = n) (hn' : t1s.length = n)
-    (hm : t2s.length = m) :
+    (hm : t2s.length = m) (hsig : expandBlockType f.inst.types bt = some (.tf t1s t2s)) :
     ⊢ iprop(↪[frame] f -∗
-      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.label n [.basic (.loop (.tf t1s t2s) es)]
+      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.label n [.basic (.loop bt es)]
         (vs ++ toEList es)] @ s ; E {{ w, Φ w }}) -∗
-      WP (vs ++ [.basic (.loop (.tf t1s t2s) es)]) @ s ; E {{ w, Φ w }}) := by
-  have hred : ∀ ws fr, Reduce ws fr (vs ++ [.basic (.loop (.tf t1s t2s) es)]) ws fr
-      [.label n [.basic (.loop (.tf t1s t2s) es)] (vs ++ toEList es)] :=
-    fun _ _ => .simple (.loop m hvs hn hn' hm)
-  exact wp_det_step_frame hred
-    (reduce_det_first hred (firstInstr_const_basic hvs (by simp)) (by simp) (by simp))
+      WP (vs ++ [.basic (.loop bt es)]) @ s ; E {{ w, Φ w }}) := by
+  rw [← hn']
+  exact wp_det_step_at_frame (fun _ => .loop hsig hvs (hn.trans hn'.symm))
+    (firstInstr_const_basic hvs (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_true_ctx]
 theorem wp_if_true_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
     (hn : n ≠ Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block tf e1s)] @ s ; E CTX i ; lh
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block bt e1s)] @ s ; E CTX i ; lh
         {{ Φ }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ bt e1s e2s)] @ s ; E
         CTX i ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.ifTrue hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.ifTrue hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_true_local_ctx]
 theorem wp_if_true_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
     {n1 : Nat} {f1 : Frame}
     (hn : n ≠ Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block tf e1s)] @ s ; E
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block bt e1s)] @ s ; E
         FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ bt e1s e2s)] @ s ; E
         FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.ifTrue hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.ifTrue hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_true]
 theorem wp_if_true {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {c : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {f : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {f : Frame}
     (hc : c ≠ Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f -∗
-      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.basic (.block tf e1s)] @ s ; E
+      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.basic (.block bt e1s)] @ s ; E
         {{ w, Φ w }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.if_ bt e1s e2s)] @ s ; E
         {{ w, Φ w }}) := by
   exact wp_det_first_frame (e₁ := [.basic (.const (.int32 c)), _])
     (fun _ _ => .simple (.ifTrue hc)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_false_ctx]
 theorem wp_if_false_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
     (hn : n = Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block tf e2s)] @ s ; E CTX i ; lh
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block bt e2s)] @ s ; E CTX i ; lh
         {{ Φ }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ bt e1s e2s)] @ s ; E
         CTX i ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.ifFalse hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.ifFalse hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_false_local_ctx]
 theorem wp_if_false_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {i : Nat} {lh : Lholed} {f0 : Frame}
     {n1 : Nat} {f1 : Frame}
     (hn : n = Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f0 -∗
-      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block tf e2s)] @ s ; E
+      ▷ (↪[frame] f0 -∗ WP [AdministrativeInstruction.basic (.block bt e2s)] @ s ; E
         FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.if_ bt e1s e2s)] @ s ; E
         FRAME n1 ; f1 CTX i ; lh {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.ifFalse hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.ifFalse hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_if_false]
 theorem wp_if_false {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {c : I32}
-    {tf : FunctionType} {e1s e2s : List BasicInstruction} {f : Frame}
+    {bt : Wasm.BlockType} {e1s e2s : List BasicInstruction} {f : Frame}
     (hc : c = Wasm.Int.zero) :
     ⊢ iprop(↪[frame] f -∗
-      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.basic (.block tf e2s)] @ s ; E
+      ▷ (↪[frame] f -∗ WP [AdministrativeInstruction.basic (.block bt e2s)] @ s ; E
         {{ w, Φ w }}) -∗
-      WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.if_ tf e1s e2s)] @ s ; E
+      WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.if_ bt e1s e2s)] @ s ; E
         {{ w, Φ w }}) := by
   exact wp_det_first_frame (e₁ := [.basic (.const (.int32 c)), _])
     (fun _ _ => .simple (.ifFalse hc)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
@@ -875,7 +863,9 @@ theorem wp_br_if_true_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {
         {{ Φ }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.brIf i)] @ s ; E
         CTX j ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.brIfTrue hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.brIfTrue hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_if_true_local_ctx]
 theorem wp_br_if_true_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {n : I32}
@@ -886,7 +876,9 @@ theorem wp_br_if_true_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp
         FRAME n1 ; f1 CTX j ; lh {{ v, Φ v }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 n)), .basic (.brIf i)] @ s ; E
         FRAME n1 ; f1 CTX j ; lh {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _]) (fun _ _ => .simple (.brIfTrue hn)) (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 n)), _])
+    (fun _ => .simple (.brIfTrue hn))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 n))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_if_true]
 theorem wp_br_if_true {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {c : I32} {i : Nat}
@@ -928,7 +920,9 @@ theorem wp_br_table_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {is
         {{ Φ }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.brTable iss i)] @ s ; E
         CTX k ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _]) (fun _ _ => .simple (.brTable (by omega) hj)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _])
+    (fun _ => .simple (.brTable (by omega) hj))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_table_local_ctx]
 theorem wp_br_table_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
@@ -940,7 +934,9 @@ theorem wp_br_table_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp G
         FRAME n1 ; f1 CTX k ; lh {{ v, Φ v }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.brTable iss i)] @ s ; E
         FRAME n1 ; f1 CTX k ; lh {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _]) (fun _ _ => .simple (.brTable (by omega) hj)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _])
+    (fun _ => .simple (.brTable (by omega) hj))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_table]
 theorem wp_br_table {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {iss : List Nat}
@@ -962,7 +958,9 @@ theorem wp_br_table_length_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp 
         {{ Φ }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.brTable iss i)] @ s ; E
         CTX j ; lh {{ Φ }}) := by
-  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _]) (fun _ _ => .simple (.brTableLength hlen)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _])
+    (fun _ => .simple (.brTableLength hlen))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_table_length_local_ctx]
 theorem wp_br_table_length_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
@@ -973,7 +971,9 @@ theorem wp_br_table_length_local_ctx {s : Stuckness} {E : CoPset} {Φ : Val → 
         FRAME n1 ; f1 CTX j ; lh {{ v, Φ v }}) -∗
       WP [AdministrativeInstruction.basic (.const (.int32 c)), .basic (.brTable iss i)] @ s ; E
         FRAME n1 ; f1 CTX j ; lh {{ v, Φ v }}) := by
-  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _]) (fun _ _ => .simple (.brTableLength hlen)) (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
+  exact wp_frame_ctx_det_step (e₁ := [.basic (.const (.int32 c)), _])
+    (fun _ => .simple (.brTableLength hlen))
+    (firstInstr_const_basic (vs := [.basic (.const (.int32 c))]) rfl (by simp)) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_br_table_length]
 theorem wp_br_table_length {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}

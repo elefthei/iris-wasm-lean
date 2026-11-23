@@ -4,12 +4,13 @@ Released under MIT license as described in the file LICENSE.
 Authors: Iris-Wasm Lean port contributors
 -/
 import Iris.Std.RocqPorting
+import Wasm.IEEE
 
 /-! Port of `theories/numerics.v`.
 
 Integers are `BitVec w`; the CompCert-based `Wasm_int.Make` functor and its mixin record are
-replaced by width-polymorphic functions in `Wasm.Int`. Floats are IEEE bit patterns whose
-arithmetic goes through Lean's `Float32`/`Float`. -/
+replaced by width-polymorphic functions in `Wasm.Int`. Floating arithmetic uses `Wasm.IEEE`'s
+exact bit-level operators, choosing the positive canonical payload when an operation generates NaN. -/
 
 namespace Wasm
 
@@ -31,6 +32,7 @@ structure F64 where
   bits : BitVec 64
   deriving DecidableEq, Inhabited, Repr
 
+-- Bit casts for clients exchanging host floats; none of the semantic operations uses them.
 def F32.ofFloat32 (x : Float32) : F32 := ⟨x.toBits.toBitVec⟩
 def F32.toFloat32 (x : F32) : Float32 := Float32.ofBits (UInt32.ofBitVec x.bits)
 def F64.ofFloat (x : Float) : F64 := ⟨x.toBits.toBitVec⟩
@@ -410,11 +412,11 @@ namespace Float
 #rocq_ignore iriswasm.Wasm_float.Pack "eqType packaging; replaced by the MixinOf class"
 #rocq_ignore iriswasm.Wasm_float.sort "eqType packaging; replaced by the MixinOf class"
 #rocq_ignore iriswasm.Wasm_float.FloatSize
-  "Flocq parameters; Lean Float32/Float are IEEE binary32/64"
-#rocq_ignore iriswasm.Wasm_float.FloatSize32 "Flocq parameters; Lean Float32 is IEEE binary32"
-#rocq_ignore iriswasm.Wasm_float.FloatSize64 "Flocq parameters; Lean Float is IEEE binary64"
+  "Flocq parameters; see IEEE.Format"
+#rocq_ignore iriswasm.Wasm_float.FloatSize32 "binary32 parameters; see IEEE.Format.f32"
+#rocq_ignore iriswasm.Wasm_float.FloatSize64 "binary64 parameters; see IEEE.Format.f64"
 #rocq_ignore iriswasm.Wasm_float.Make
-  "Flocq-based operations; implemented by Lean Float builtins in instMixinOfF32/F64"
+  "Flocq-based operations; see IEEE.Format"
 #rocq_ignore iriswasm.Wasm_float.Float32 "instantiation of Make; see instMixinOfF32"
 #rocq_ignore iriswasm.Wasm_float.Float64 "instantiation of Make; see instMixinOfF64"
 
@@ -453,144 +455,49 @@ class MixinOf (α : Type) where
 @[rocq_alias iriswasm.Wasm_float.float_ne]
 def ne {α : Type} [MixinOf α] (x y : α) : Bool := !MixinOf.eq x y
 
-/-! Operations missing from Lean's `Float`. `F32` uses them through the exact promotion
-`Float32.toFloat` (their results are representable in binary32). -/
-namespace Impl
-
-def nan : _root_.Float := 0.0 / 0.0
-
-def signBit (x : _root_.Float) : Bool := x.toBits >>> 63 == 1
-
-def trunc (x : _root_.Float) : _root_.Float := if x < 0 then x.ceil else x.floor
-
-/-- IEEE roundToIntegralTiesToEven. -/
-def nearest (x : _root_.Float) : _root_.Float :=
-  if x.isNaN || x.isInf || x == 0 then x else
-  let f := x.floor
-  let c := x.ceil
-  if x - f < c - x then f
-  else if c - x < x - f then c
-  else if (f / 2).floor * 2 == f then f else c
-
-/-- `numerics.v` `fmin`: NaN if either operand is NaN, `-0 < +0`. -/
-def fmin (a b : _root_.Float) : _root_.Float :=
-  if a.isNaN || b.isNaN then nan
-  else if a < b then a else if b < a then b else if signBit a then a else b
-
-/-- `numerics.v` `fmax`: NaN if either operand is NaN, `-0 < +0`. -/
-def fmax (a b : _root_.Float) : _root_.Float :=
-  if a.isNaN || b.isNaN then nan
-  else if a < b then b else if b < a then a else if signBit a then b else a
-
-/-- `trunc x` lies in `[lo, hi)`; false for NaN and infinities. -/
-def truncIn (lo hi x : _root_.Float) : Bool := lo ≤ trunc x && trunc x < hi
-
-def ui32Trunc (x : _root_.Float) : Option I32 :=
-  if truncIn 0 4294967296.0 x then some (trunc x).toUInt32.toBitVec else none
-
-def si32Trunc (x : _root_.Float) : Option I32 :=
-  if truncIn (-2147483648.0) 2147483648.0 x then some (trunc x).toInt32.toBitVec else none
-
-def ui64Trunc (x : _root_.Float) : Option I64 :=
-  if truncIn 0 18446744073709551616.0 x then some (trunc x).toUInt64.toBitVec else none
-
-def si64Trunc (x : _root_.Float) : Option I64 :=
-  -- diverges from iriswasm numerics.v:1745 which uses the i32 bound
-  if truncIn (-9223372036854775808.0) 9223372036854775808.0 x then
-    some (trunc x).toInt64.toBitVec
-  else none
-
-end Impl
+private abbrev bitMixin {α : Type} (f : IEEE.Format) (bits : α → f.Bits) (mk : f.Bits → α) :
+    MixinOf α where
+  zero := mk 0
+  neg x := mk (f.neg (bits x))
+  abs x := mk (f.abs (bits x))
+  sqrt x := mk (f.sqrt (bits x)).choose
+  ceil x := mk (f.integral .ceil (bits x)).choose
+  floor x := mk (f.integral .floor (bits x)).choose
+  trunc x := mk (f.integral .trunc (bits x)).choose
+  nearest x := mk (f.integral .nearest (bits x)).choose
+  add x y := mk (f.add (bits x) (bits y)).choose
+  sub x y := mk (f.sub (bits x) (bits y)).choose
+  mul x y := mk (f.mul (bits x) (bits y)).choose
+  div x y := mk (f.div (bits x) (bits y)).choose
+  min x y := mk (f.minMax false (bits x) (bits y)).choose
+  max x y := mk (f.minMax true (bits x) (bits y)).choose
+  copysign x y := mk (f.copySign (bits x) (bits y))
+  eq x y := f.cmp (bits x) (bits y) == some .eq
+  lt x y := f.cmp (bits x) (bits y) == some .lt
+  gt x y := f.cmp (bits x) (bits y) == some .gt
+  le x y := (f.cmp (bits x) (bits y)).any Ordering.isLE
+  ge x y := (f.cmp (bits y) (bits x)).any Ordering.isLE
+  ui32Trunc x := f.truncToInt false 32 (bits x)
+  si32Trunc x := f.truncToInt true 32 (bits x)
+  ui64Trunc x := f.truncToInt false 64 (bits x)
+  si64Trunc x := f.truncToInt true 64 (bits x)
+  convertUi32 i := mk (f.fromInt i.toNat)
+  convertSi32 i := mk (f.fromInt i.toInt)
+  convertUi64 i := mk (f.fromInt i.toNat)
+  convertSi64 i := mk (f.fromInt i.toInt)
 
 end Float
 
-namespace F32
-
-private def lift1 (f : Float32 → Float32) (x : F32) : F32 := ofFloat32 (f x.toFloat32)
-private def lift2 (f : Float32 → Float32 → Float32) (x y : F32) : F32 :=
-  ofFloat32 (f x.toFloat32 y.toFloat32)
-private def via1 (f : Float → Float) (x : F32) : F32 :=
-  ofFloat32 (f x.toFloat32.toFloat).toFloat32
-private def via2 (f : Float → Float → Float) (x y : F32) : F32 :=
-  ofFloat32 (f x.toFloat32.toFloat y.toFloat32.toFloat).toFloat32
-
-end F32
-
-namespace F64
-
-private def lift1 (f : Float → Float) (x : F64) : F64 := ofFloat (f x.toFloat)
-private def lift2 (f : Float → Float → Float) (x y : F64) : F64 := ofFloat (f x.toFloat y.toFloat)
-
-end F64
-
 @[rocq_alias iriswasm.f32m]
-instance instMixinOfF32 : Float.MixinOf F32 where
-  zero := ⟨0⟩
-  neg := F32.lift1 Float32.neg
-  abs := F32.lift1 Float32.abs
-  sqrt := F32.lift1 Float32.sqrt
-  ceil := F32.lift1 Float32.ceil
-  floor := F32.lift1 Float32.floor
-  trunc := F32.via1 Float.Impl.trunc
-  nearest := F32.via1 Float.Impl.nearest
-  add := F32.lift2 (· + ·)
-  sub := F32.lift2 (· - ·)
-  mul := F32.lift2 (· * ·)
-  div := F32.lift2 (· / ·)
-  min := F32.via2 Float.Impl.fmin
-  max := F32.via2 Float.Impl.fmax
-  copysign x y := ⟨(x.bits &&& 0x7fffffff#32) ||| (y.bits &&& 0x80000000#32)⟩
-  eq x y := x.toFloat32 == y.toFloat32
-  lt x y := decide (x.toFloat32 < y.toFloat32)
-  gt x y := decide (y.toFloat32 < x.toFloat32)
-  le x y := decide (x.toFloat32 ≤ y.toFloat32)
-  ge x y := decide (y.toFloat32 ≤ x.toFloat32)
-  ui32Trunc x := Float.Impl.ui32Trunc x.toFloat32.toFloat
-  si32Trunc x := Float.Impl.si32Trunc x.toFloat32.toFloat
-  ui64Trunc x := Float.Impl.ui64Trunc x.toFloat32.toFloat
-  si64Trunc x := Float.Impl.si64Trunc x.toFloat32.toFloat
-  convertUi32 i := F32.ofFloat32 (Float32.ofNat i.toNat)
-  convertSi32 i := F32.ofFloat32 (Float32.ofInt i.toInt)
-  convertUi64 i := F32.ofFloat32 (Float32.ofNat i.toNat)
-  convertSi64 i := F32.ofFloat32 (Float32.ofInt i.toInt)
+instance instMixinOfF32 : Float.MixinOf F32 := Float.bitMixin .f32 F32.bits F32.mk
 
 @[rocq_alias iriswasm.f64m]
-instance instMixinOfF64 : Float.MixinOf F64 where
-  zero := ⟨0⟩
-  neg := F64.lift1 _root_.Float.neg
-  abs := F64.lift1 _root_.Float.abs
-  sqrt := F64.lift1 _root_.Float.sqrt
-  ceil := F64.lift1 _root_.Float.ceil
-  floor := F64.lift1 _root_.Float.floor
-  trunc := F64.lift1 Float.Impl.trunc
-  nearest := F64.lift1 Float.Impl.nearest
-  add := F64.lift2 (· + ·)
-  sub := F64.lift2 (· - ·)
-  mul := F64.lift2 (· * ·)
-  div := F64.lift2 (· / ·)
-  min := F64.lift2 Float.Impl.fmin
-  max := F64.lift2 Float.Impl.fmax
-  copysign x y :=
-    ⟨(x.bits &&& 0x7fffffffffffffff#64) ||| (y.bits &&& 0x8000000000000000#64)⟩
-  eq x y := x.toFloat == y.toFloat
-  lt x y := decide (x.toFloat < y.toFloat)
-  gt x y := decide (y.toFloat < x.toFloat)
-  le x y := decide (x.toFloat ≤ y.toFloat)
-  ge x y := decide (y.toFloat ≤ x.toFloat)
-  ui32Trunc x := Float.Impl.ui32Trunc x.toFloat
-  si32Trunc x := Float.Impl.si32Trunc x.toFloat
-  ui64Trunc x := Float.Impl.ui64Trunc x.toFloat
-  si64Trunc x := Float.Impl.si64Trunc x.toFloat
-  convertUi32 i := F64.ofFloat (_root_.Float.ofNat i.toNat)
-  convertSi32 i := F64.ofFloat (_root_.Float.ofInt i.toInt)
-  convertUi64 i := F64.ofFloat (_root_.Float.ofNat i.toNat)
-  convertSi64 i := F64.ofFloat (_root_.Float.ofInt i.toInt)
+instance instMixinOfF64 : Float.MixinOf F64 := Float.bitMixin .f64 F64.bits F64.mk
 
--- NaN canonicalisation of numerics.v (opaque `nans`) is not modelled; payloads follow the hardware.
 @[rocq_alias iriswasm.wasm_demote]
-def wasmDemote (z : F64) : F32 := F32.ofFloat32 z.toFloat.toFloat32
+def wasmDemote (z : F64) : F32 := ⟨(IEEE.Format.f64.convert .f32 z.bits).choose⟩
 
 @[rocq_alias iriswasm.wasm_promote]
-def wasmPromote (z : F32) : F64 := F64.ofFloat z.toFloat32.toFloat
+def wasmPromote (z : F32) : F64 := ⟨(IEEE.Format.f32.convert .f64 z.bits).choose⟩
 
 end Wasm

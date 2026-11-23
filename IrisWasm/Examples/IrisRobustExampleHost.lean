@@ -5,7 +5,7 @@ Authors: Iris-Wasm Lean port contributors
 -/
 import IrisWasm.Examples.IrisRobustExample
 import IrisWasm.Logrel.IrisInterpInstanceAlloc
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/iris_robust_example_host.v`.
 
@@ -446,14 +446,7 @@ theorem lse_log_spec (C : TContext) (i : Instance) (f : Frame) (g gFunc : Nat)
   inext
   iintro ⟨Hf, Hidnstart⟩
   iapply (wp_frame_rewrite _ _ _ _ _ _).1
-  have hnv : toVal [.local 0 ⟨[] ++ nZeros [.i32], inst⟩
-      [.basic (.block (.tf [] []) (lseLogExpr g log))]] = none := by
-    simp [toVal, toValInstr_local, toValInstr, mergeValuesList]
-  iapply wp_frame_bind _ _ _ 0 _ f _ hnv $$ Hf
-  iintro Hf
-  rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) (lseLogExpr g log))]]
-  iapply wp_block (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-  inext
+  iapply wp_frame_bind _ _ _ 0 _ f _ (toVal_native_frame_none _ _ _) $$ Hf
   iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
@@ -542,15 +535,6 @@ theorem lse_log_spec (C : TContext) (i : Instance) (f : Frame) (g gFunc : Nat)
     imod Hcls $$ [Hg Hown] with Hown
     · iframe
     imodintro
-    iapply (wp_frame_rewrite _ _ _ _ _ _).1
-    iapply (wandIff_equiv (wp_wasm_empty_ctx_frame _ _ _ _ _ _)).2
-    rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) es)]]
-    iapply wp_block_local_ctx (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-    inext
-    iintro Hf
-    iapply (wandIff_equiv (wp_wasm_empty_ctx_frame _ _ _ _ _ _)).1
-    iapply (wp_frame_rewrite _ _ _ _ _ _).2
-    simp only [List.nil_append]
     ihave HH := be_fundamental_local_stuck_host (GF := GF) C es [] [] locs
       [(.hostfuncidx h, .tf [.i32] [])] hC htyp
     iunfold semanticTypingLocalStuckHost at HH
@@ -563,6 +547,7 @@ theorem lse_log_spec (C : TContext) (i : Instance) (f : Frame) (g gFunc : Nat)
       simp only [List.nil_append]
       iapply n_zeros_interp_values
     iunfold interpExpressionClosureStuckHost at Hc
+    simp only [List.nil_append]
     iapply IrisWp.wp_wand (fun f => iprop(↪[frame] f)) (ι := wasmIrisGS) $$ Hc
     iintro %v ⟨⟨Hv, Hown⟩, Hf⟩
     isplitl [Hv Hown]
@@ -607,10 +592,8 @@ def lseFuncImpts : List ExternT := [.func (.tf [] []), .func (.tf [.i32] [])]
 
 @[rocq_alias iriswasm.iris_robust_example_host.lse_module_typing]
 theorem lse_module_typing : ModuleTyping lseLogModule lseFuncImpts [] := by
-  -- Coq's `type_next` Ltac is replaced by the type checker (`b_e_type_checker_reflects_typing`)
-  refine ⟨[.tf [] []], [], .cons ?_ .nil, rfl, rfl, .nil, by simp, by simp, rfl,
-    .cons rfl (.cons rfl .nil), .nil⟩
-  exact ⟨by decide, by decide, (b_e_type_checker_reflects_typing _ _ _).1 rfl⟩
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  rfl
 
 @[rocq_alias iriswasm.iris_robust_example_host.module_restrictions_lse]
 theorem module_restrictions_lse : ModuleRestrictions lseLogModule :=
@@ -650,14 +633,14 @@ private theorem adv_typing_facts (adv : Module)
   obtain ⟨fts, gts, h⟩ := htyp
   refine ⟨fts, gts, h, ?_⟩
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := adv
-  obtain ⟨hfs, -, -, -, -, -, -, himps, hexps⟩ := h
+  obtain ⟨hfs, -, -, -, -, -, -, himps, -, hexps⟩ := h
   cases himps with
   | cons hi hnil =>
   cases hnil
   rename_i imp
   refine ⟨?_, ?_⟩
   · obtain ⟨imod, iname, desc⟩ := imp
-    cases desc <;> simp_all [moduleImportTyping, getImportFuncCount]
+    cases desc <;> simp_all [moduleImportTyping, moduleContext, getImportFuncCount]
   cases hexps with
   | cons he hnil =>
   cases hnil
@@ -667,15 +650,16 @@ private theorem adv_typing_facts (adv : Module)
   | func fi =>
     obtain ⟨nidx⟩ := fi
     cases nidx with
-    | zero => simp [moduleExportTyping, extTFuncs] at he
+    | zero => simp [moduleExportTyping, moduleContext, extTFuncs] at he
     | succ n =>
     have hft : fts[n]? = some (.tf [] []) := by
-      simp [moduleExportTyping, extTFuncs] at he
+      simp [moduleExportTyping, moduleContext, extTFuncs] at he
       split at he <;> simp_all
     obtain ⟨⟨⟨k⟩, locs, body⟩, hmf, hty⟩ := forall2_lookup_r hfs hft
-    obtain ⟨-, hk, hbe⟩ := hty
-    refine ⟨nm, n, _, k, rfl, hmf, rfl, by simpa using hk, ?_⟩
-    simpa [updLocalLabelReturn] using hbe
+    obtain ⟨hk, hbe⟩ := hty
+    change tfs[k]? = _ at hk
+    refine ⟨nm, n, _, k, rfl, hmf, rfl, by simp [List.getD_eq_getElem?_getD, hk], ?_⟩
+    simpa [moduleContext, updLocalLabelReturn] using hbe
   | table t => obtain ⟨_⟩ := t; simp [moduleExportTyping] at he
   | mem m => obtain ⟨_⟩ := m; simp [moduleExportTyping] at he
   | global g => obtain ⟨_⟩ := g; simp [moduleExportTyping] at he

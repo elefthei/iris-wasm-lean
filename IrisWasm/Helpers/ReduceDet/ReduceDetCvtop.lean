@@ -41,4 +41,11 @@ theorem cvtop_reinterpret_det {v : Value} {t1 t2 : ValueType} {s : StoreRecord} 
   intro _ Hred
   only_one Hred
 
+theorem cvtop_truncSat_inv {v w : Value} {src dst : ValueType} {sx : Sx} {s s' : StoreRecord}
+    {f f' : Frame} {es : List AdministrativeInstruction}
+    (h : truncSat dst sx v = some w)
+    (hr : Reduce s f [basic (.const v), basic (.cvtop dst .truncSat src (some sx))] s' f' es) :
+    (s, f, [basic (.const w)]) = (s', f', es) := by
+  only_one_reduction hr
+
 end IrisWasm

@@ -21,8 +21,9 @@ theorem binop_type_agree_interp (t : ValueType) (op : Binop) (w1 w2 : Value) :
       ∀ w, ⌜appBinop op w1 w2 = some w⌝ -∗ interpValue t w : IProp GF) := by
   intro h
   cases h <;> simp only [interpValue, interpValueI32, interpValueI64, interpValueF32,
-    interpValueF64] <;> iintro %⟨z1, rfl⟩ %⟨z2, rfl⟩ %w %hw <;> ipureintro <;>
-    simp [appBinop] at hw <;> obtain ⟨a, -, rfl⟩ := hw <;> exact ⟨a, rfl⟩
+    interpValueF64, interpValueV128] <;> iintro %⟨z1, rfl⟩ %⟨z2, rfl⟩ %w %hw <;> ipureintro <;>
+    simp [appBinop] at hw <;> first | subst w | obtain ⟨_, -, rfl⟩ := hw
+  all_goals exact ⟨_, rfl⟩
 
 @[rocq_alias iriswasm.typing_binop]
 theorem typing_binop (C : TContext) (t : ValueType) (op : Binop) :
@@ -35,11 +36,13 @@ theorem typing_binop (C : TContext) (t : ValueType) (op : Binop) :
   ihave %Hlen := BI.BigSepL2.bigSepL2_length $$ Hv
   rcases ws with _ | ⟨w1, _ | ⟨w2, _ | ⟨_, _⟩⟩⟩ <;> simp at Hlen
   icases Hv with ⟨Hv1, Hv2, -⟩
+  ihave %Ht1 := interp_value_types_agree t w1 $$ Hv1
+  ihave %Ht2 := interp_value_types_agree t w2 $$ Hv2
   simp only [ofVal, vToEList, toEList, List.map_nil, List.map_cons, List.cons_append, List.nil_append]
   cases hs : appBinop op w1 w2 with
   | some w =>
     iapply interp_expression_of_wp $$ [Hf] Hfv
-    · iapply wp_binop hs $$ Hf
+    · iapply wp_binop Ht1 Ht2 hop hs $$ Hf
       inext; ipureintro; rfl
     · unfold interpVal interpValues; iright; iexists [w]
       isplitr
@@ -49,7 +52,7 @@ theorem typing_binop (C : TContext) (t : ValueType) (op : Binop) :
         · iempintro
   | none =>
     iapply interp_expression_of_wp $$ [Hf] Hfv
-    · iapply wp_binop_failure hs $$ [] Hf
+    · iapply wp_binop_failure Ht1 Ht2 hop hs $$ [] Hf
       inext; ipureintro; rfl
     · unfold interpVal; ileft; ipureintro; rfl
 

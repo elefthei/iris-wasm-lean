@@ -19,7 +19,7 @@ theorem unop_type_agree_interp (t : ValueType) (op : Unop) (w : Value) :
     UnopTypeAgree t op → ⊢ (interpValue t w -∗ interpValue t (appUnop op w) : IProp GF) := by
   intro h
   cases h <;> cases w <;> simp [interpValue, interpValueI32, interpValueI64, interpValueF32,
-    interpValueF64, appUnop] <;> (iintro H; iexact H)
+    interpValueF64, interpValueV128, appUnop] <;> (iintro H; iexact H)
 
 @[rocq_alias iriswasm.typing_unop]
 theorem typing_unop (C : TContext) (t : ValueType) (op : Unop) :
@@ -31,9 +31,10 @@ theorem typing_unop (C : TContext) (t : ValueType) (op : Unop) :
   ihave %Hlen := BI.BigSepL2.bigSepL2_length $$ Hv
   rcases ws with _ | ⟨w, _ | ⟨_, _⟩⟩ <;> simp at Hlen
   icases Hv with ⟨Hw, -⟩
+  ihave %Ht := interp_value_types_agree t w $$ Hw
   simp only [ofVal, vToEList, toEList, List.map_nil, List.map_cons, List.cons_append, List.nil_append]
   iapply interp_expression_of_wp $$ [Hf] Hfv
-  · iapply wp_unop rfl $$ Hf
+  · iapply wp_unop Ht hop rfl $$ Hf
     inext; ipureintro; rfl
   · unfold interpVal interpValues; iright; iexists [appUnop op w]
     isplitr

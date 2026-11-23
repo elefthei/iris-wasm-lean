@@ -90,11 +90,11 @@ private theorem mem_mapIdx_pair {K T : Type} (f : Nat → K) (l : List T) (k : K
 
 @[rocq_alias iriswasm.create_table]
 def createTable (len : Nat) : Tableinst :=
-  { data := List.replicate len none, maxOpt := some len }
+  { entries := RunTable.uniform len none, maxOpt := some len }
 
-@[rocq_alias iriswasm.create_memory]
-def createMemory (sz szLim : Nat) (initB : Byte) : Memory :=
-  { data := MemoryList.memMake initB sz, maxOpt := some szLim }
+#rocq_ignore iriswasm.create_memory "Core memories retain their full memory type"
+def createMemory (sz : Nat) (mt : MemoryType) (initB : Byte) : Memory :=
+  { data := MemoryList.memMake initB sz, type := mt }
 
 #rocq_ignore iriswasm.inhabited_table "`Tableinst` derives `Inhabited`"
 #rocq_ignore iriswasm.inhabited_memory "`Memory` derives `Inhabited`"
@@ -148,6 +148,9 @@ def gmapOfList2dOffset {T : Type} (l : List (List T)) (offset : Nat) : NatPairMa
 @[rocq_alias iriswasm.memory_to_list]
 def memoryToList (m : Memory) : List Byte :=
   m.data.data
+
+theorem lengthMem_eq_data_length (m : Memory) : lengthMem m = m.data.data.length :=
+  (MemoryList.length_data _).symm
 
 @[rocq_alias iriswasm.gmap_of_memory]
 def gmapOfMemory (l : List Memory) : NatPairMap Byte :=
@@ -439,22 +442,25 @@ theorem gmap_of_table_append (l : List Tableinst) (len : Nat) :
     gmapOfTable (l ++ [createTable len]) =
       new2dGmapAtN l.length (List.replicate len (none : Funcelem)) ∪ gmapOfTable l := by
   rw [gmapOfTable, gmapOfTable, ← List.length_map (f := tableToList), List.map_append]
-  exact gmap_of_list_2d_append _ _ _
+  simpa only [List.map_singleton, tableToList, createTable, Tableinst.data,
+    RunTable.toList_uniform] using gmap_of_list_2d_append (l.map tableToList) len none
 
-@[rocq_alias iriswasm.gmap_of_memory_append]
-theorem gmap_of_memory_append (l : List Memory) (sz szLim : Nat) (initB : Byte) :
-    gmapOfMemory (l ++ [createMemory sz szLim initB]) =
+#rocq_ignore iriswasm.gmap_of_memory_append "The new memory retains its full Core memory type"
+theorem gmap_of_memory_append (l : List Memory) (sz : Nat) (mt : MemoryType) (initB : Byte) :
+    gmapOfMemory (l ++ [createMemory sz mt initB]) =
       new2dGmapAtN l.length (List.replicate sz initB) ∪ gmapOfMemory l := by
   rw [gmapOfMemory, gmapOfMemory, ← List.length_map (f := memoryToList), List.map_append]
-  exact gmap_of_list_2d_append _ _ _
+  simpa only [List.map_singleton, memoryToList, createMemory, MemoryList.data_make] using
+    gmap_of_list_2d_append (l.map memoryToList) sz initB
 
 @[rocq_alias iriswasm.gmap_of_table_insert]
 theorem gmap_of_table_insert (n i : Nat) (x : Funcelem) (l : List Tableinst) (t : Tableinst)
-    (hl : l[n]? = some t) (hlen : i < t.data.length) :
-    insert (gmapOfTable l) (n, i) x =
-      gmapOfTable (l.set n { data := t.data.set i x, maxOpt := t.maxOpt }) := by
+    (hl : l[n]? = some t) (hlen : i < t.data.length)
+    (t' : Tableinst) (hdata : t'.data = t.data.set i x) :
+    insert (gmapOfTable l) (n, i) x = gmapOfTable (l.set n t') := by
   rw [gmapOfTable, gmapOfTable, List.map_set]
-  exact gmap_of_list_2d_insert _ _ _ _ t.data (by simp [hl, tableToList]) hlen
+  simpa only [tableToList, hdata] using
+    gmap_of_list_2d_insert n i x (l.map tableToList) t.data (by simp [hl, tableToList]) hlen
 
 @[rocq_alias iriswasm.insert_take_drop]
 theorem insert_take_drop {T : Type} (i : Nat) (l : List T) (x : T) (h : i < l.length) :
@@ -466,13 +472,11 @@ theorem gmap_of_memory_insert (n i : Nat) (x : Byte) (l : List Memory) (m : Memo
     (md' : MemoryList) (hl : l[n]? = some m) (hlen : i < m.data.data.length)
     (hupd : MemoryList.memUpdate i x m.data = some md') :
     insert (gmapOfMemory l) (n, i) x =
-      gmapOfMemory (l.set n { data := md', maxOpt := m.maxOpt }) := by
-  simp only [MemoryList.memUpdate, hlen, ite_true, Option.some.injEq] at hupd
-  subst hupd
+      gmapOfMemory (l.set n { m with data := md' }) := by
   rw [gmapOfMemory, gmapOfMemory, List.map_set]
-  rw [gmap_of_list_2d_insert _ _ _ _ m.data.data (by simp [hl, memoryToList]) hlen,
-    insert_take_drop _ _ _ hlen]
-  rfl
+  have hu : md'.data = m.data.data.set i x := by apply MemoryList.data_update; exact hupd
+  simpa only [memoryToList, hu] using
+    gmap_of_list_2d_insert n i x (l.map memoryToList) m.data.data (by simp [hl, memoryToList]) hlen
 
 @[rocq_alias iriswasm.gmap_of_memory_insert_block]
 theorem gmap_of_memory_insert_block (n : Nat) (m mem : Memory) (l : List Memory)
@@ -506,17 +510,14 @@ theorem mem_grow_data (m : Memory) (n : Nat) (m' : Memory) (h : memGrow m n = so
   unfold memGrow at h
   dsimp only at h
   split at h
-  · split at h
-    · split at h
-      · cases h; rfl
-      · cases h
-    · cases h; rfl
+  · cases h; exact MemoryList.data_grow _ _
   · cases h
 
 @[rocq_alias iriswasm.mem_grow_length]
 theorem mem_grow_length (m : Memory) (n : Nat) (m' : Memory) (h : memGrow m n = some m') :
     lengthMem m' = lengthMem m + n * pageSize := by
-  simp [lengthMem, MemoryList.lengthMem, mem_grow_data m n m' h]
+  simp only [lengthMem_eq_data_length, mem_grow_data m n m' h, List.length_append,
+    List.length_replicate]
 
 @[rocq_alias iriswasm.mem_grow_appendix]
 def memGrowAppendix (m : Memory) (mn : Nat) (n : Nat) : NatPairMap Byte :=
@@ -546,7 +547,7 @@ private theorem get?_memGrowAppendix (m : Memory) (mn n i j : Nat) :
 
 private theorem memSize_mul_pageSize (m : Memory) (h : MlValid m.data) :
     memSize m * pageSize = m.data.data.length :=
-  length_mem_divisible m.data h
+  (length_mem_divisible m.data h).trans (MemoryList.length_data _).symm
 
 @[rocq_alias iriswasm.mem_grow_appendix_disjoint]
 theorem mem_grow_appendix_disjoint (m : Memory) (n : Nat) (mn : Nat) (m' : Memory)

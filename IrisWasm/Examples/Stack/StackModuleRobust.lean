@@ -35,7 +35,7 @@ theorem module_typing_exports_length (m : Module) (impts expts : List ExternT) :
     ModuleTyping m impts expts → m.exports.length = expts.length := by
   rintro ⟨fts, gts, h⟩
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := m
-  exact h.2.2.2.2.2.2.2.2.length_eq
+  exact h.2.2.2.2.2.2.2.2.2.length_eq
 
 private theorem forall₂_lookup_r {A B : Type} {R : A → B → Prop} {l₁ : List A} {l₂ : List B}
     (h : Wasm.List.Forall₂ R l₁ l₂) {k : Nat} {b : B} (hb : l₂[k]? = some b) :
@@ -90,7 +90,7 @@ theorem module_typing_start_type (m : Module) (impts expts : List ExternT)
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := m
   simp only at hs; subst hs
   have h := hm.2.2.2.2.2.2.1
-  simp [predOption, moduleStartTyping, hn, ← ht, htn] at h
+  simp [predOption, moduleStartTyping, moduleContext, hn, ← ht, htn] at h
   exact h.2
 
 @[rocq_alias iriswasm.module_typing_func_not_import]
@@ -122,11 +122,12 @@ theorem module_typing_func_not_import (m : Module) (impts expts : List ExternT)
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := m
   obtain ⟨mf, hmf, htyp⟩ := forall₂_lookup_r hm.1 htn
   obtain ⟨⟨fidx⟩, locs, es⟩ := mf
-  obtain ⟨_, hnth, hbe⟩ := htyp
+  obtain ⟨hnth, hbe⟩ := htyp
+  change tfs[fidx]? = _ at hnth
   refine ⟨n - (extTFuncs impts).length, fidx, locs, es, ?_, hmf, ?_, ?_⟩
   · rw [List.getElem?_drop, Nat.add_sub_cancel' hge]; exact hn
-  · simpa using hnth
-  · simpa [updLocalLabelReturn] using hbe
+  · simp [List.getD_eq_getElem?_getD, hnth]
+  · simpa [moduleContext, updLocalLabelReturn] using hbe
 
 local notation "logrelNais" => LogrelNaInvs.logrelNais (GF := GF)
 
@@ -167,31 +168,19 @@ private theorem start_spec (C : TContext) (inst : Instance) (idnstart : Nat)
   imod Hcls $$ [Haf Hown] with Hown
   · iframe
   imodintro
-  ihave H : wpWasmCtxFrame .NotStuck ⊤ [.basic (.block (.tf [] []) es)]
-      (fun v => iprop((interpVal [] v ∗ NonAtomicInvariant.own logrelNais ⊤) ∗
-        ↪[frame] emptyFrame))
-      0 ⟨[] ++ nZeros locs, inst⟩ 0 (.base [] []) $$ [Hf Hown]
-  · rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) es)]]
-    iapply wp_block_local_ctx (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-    inext
-    iintro Hf
-    iapply (wandIff_equiv (wp_wasm_empty_ctx_frame _ _ _ _ _ _)).1
-    unfold wpWasmFrame
-    simp only [List.nil_append]
-    ihave Hl := be_fundamental_local (GF := GF) C es [] [] locs hC hes
-    iunfold semanticTypingLocalNoHost at Hl
-    icases Hl with ⟨-, Hl⟩
-    iunfold interpExpressionClosureNoHost at Hl
-    iapply Hl $$ %inst Hi %emptyFrame %(nZeros locs) Hf Hown
-    simp only [List.nil_append]
-    iunfold interpVal
+  ihave Hl := be_fundamental_local (GF := GF) C es [] [] locs hC hes
+  iunfold semanticTypingLocalNoHost at Hl
+  icases Hl with ⟨-, Hl⟩
+  iunfold interpExpressionClosureNoHost at Hl
+  ihave H := Hl $$ %inst Hi %emptyFrame %(nZeros locs) Hf Hown []
+  · iunfold interpVal
     iright
     iunfold interpValues
     iexists nZeros locs
     isplitr; · ipureintro; rfl
+    simp only [List.nil_append]
     iapply n_zeros_interp_values
-  unfold wpWasmCtxFrame
-  ispecialize H $$ %_ %(FundAux.lfilled_empty'.2 rfl)
+  simp only [List.nil_append]
   iapply wp_wand_s $$ H
   iintro %v ⟨⟨Hv, Hown⟩, Hf⟩
   iframe Hf Hown

@@ -599,17 +599,6 @@ theorem lfilled_get_base_pull {i : Nat} (j : Nat) (vh : ValidHoled i)
 
 /-! ### `to_val` on host calls -/
 
-/-- Some element of `llfill vh [e]` is `e` itself or a `label`/`local` (not in Coq). -/
-private theorem llfill_mem_witness (vh : Llholed) (e : AdministrativeInstruction) :
-    ∃ a ∈ llfill vh [e], a = e ∨ (∃ n es LI, a = .label n es LI) ∨
-      (∃ n f LI, a = .local n f LI) := by
-  cases vh with
-  | base => exact ⟨e, by simp [llfill], .inl rfl⟩
-  | label b n es lh a =>
-    exact ⟨.label n es (llfill lh [e]), by simp [llfill], .inr (.inl ⟨_, _, _, rfl⟩)⟩
-  | «local» b n f lh a =>
-    exact ⟨.local n f (llfill lh [e]), by simp [llfill], .inr (.inr ⟨_, _, _, rfl⟩)⟩
-
 private def llOfVh : {i : Nat} → ValidHoled i → Llholed
   | _, .base b a => .base b a
   | _, .rec_ b n es vh a => .label b n es (llOfVh vh) a
@@ -619,32 +608,6 @@ private theorem vfill_llOfVh {i : Nat} (vh : ValidHoled i) (es : List Administra
   induction vh with
   | base => rfl
   | rec_ _ _ _ _ _ ih => simp [vfill, llfill, llOfVh, ih]
-
-@[rocq_alias iriswasm.to_val_call_host_label_inv]
-theorem to_val_call_host_label_inv (n : Nat) (es1 es : List AdministrativeInstruction)
-    (tf : FunctionType) (h : Hostfuncidx) (w : List Value) (vh : Llholed) :
-    toVal [.label n es1 es] = some (.callHostV tf h w vh) →
-    ∃ vh', vh = .label [] n es1 vh' [] ∧ es = llfill vh' [.callHost tf h w] := by
-  intro hh
-  rcases toVal_label_some hh with ⟨_, vh0, hL⟩ | ⟨sh, hL⟩ | ⟨tf', h', w', vh', hL⟩ <;>
-    rw [toVal_singleton, toValInstr_label, hL] at hh
-  · rcases hd : vhDecrease (ValidHoled.rec_ [] n es1 vh0 []) with _ | x <;>
-      simp [hd, valOfValNotVal] at hh
-  · simp [valOfValNotVal] at hh
-  simp [valOfValNotVal] at hh
-  obtain ⟨rfl, rfl, rfl, rfl⟩ := hh
-  exact ⟨vh', rfl, (of_to_val _ _ hL).symm⟩
-
-@[rocq_alias iriswasm.to_es_list_llfill_contr]
-theorem to_es_list_llfill_contr (es : List BasicInstruction) (vh' : Llholed) (tf : FunctionType)
-    (h : Hostfuncidx) (w : List Value) :
-    toEList es = llfill vh' [.callHost tf h w] → False := by
-  intro heq
-  obtain ⟨a, ha, hor⟩ := llfill_mem_witness vh' (.callHost tf h w)
-  rw [← heq] at ha
-  simp [toEList] at ha
-  obtain ⟨x, -, rfl⟩ := ha
-  rcases hor with h | ⟨_, _, _, h⟩ | ⟨_, _, _, h⟩ <;> cases h
 
 @[rocq_alias iriswasm.llfill_local]
 theorem llfill_local (vh : Llholed) (n : Nat) (f : Frame) (e : List AdministrativeInstruction) :
@@ -961,35 +924,21 @@ theorem interp_instance_lookup_global (C : TContext) (hl : List (Hostfuncidx × 
   · ipureintro; rfl
   iexact H
 
-@[rocq_alias iriswasm.interp_instance_get_mem]
 theorem interp_instance_get_mem (C : TContext) (hl : List (Hostfuncidx × FunctionType))
-    (i : Instance) :
-    C.memory ≠ [] →
+    (i : Instance) (x : Nat) {mt : MemoryType} (hmt : C.memory[x]? = some mt) :
     ⊢ iprop(interpInstance (GF := GF) C hl i -∗
-      ∃ (τm : Limits) (mem : Nat), ⌜C.memory[0]? = some τm⌝ ∗
-        ⌜i.memory[0]? = some mem⌝ ∗
-        mem ↪[wmlimit] τm.max ∗
-        interpMem mem) := by
-  intro hne
-  obtain ⟨τm, hτ⟩ : ∃ τm, C.memory[0]? = some τm := by
-    cases h : C.memory with
-    | nil => exact absurd h hne
-    | cons a _ => exact ⟨a, rfl⟩
+      ∃ a, ⌜i.memory[x]? = some a⌝ ∗ interpMemLimit a mt.limits.max ∗ interpMem mt.address a) := by
   iintro Hi
   iunfold interpInstance, interpInstance' at Hi
   icases Hi with ⟨-, -, -, Hm, -⟩
-  isimp only [hτ] at Hm
-  rcases hm : i.memory[0]? with _ | a
-  · isimp only [hm] at Hm
-    iexfalso; iexact Hm
-  · isimp only [hm] at Hm
-    icases Hm with ⟨Hl, Hm⟩
-    iexists τm, a
-    isplitr
-    · ipureintro; exact hτ
-    isplitr
-    · ipureintro; rfl
-    iframe
+  ihave %hlen := BigSepL2.bigSepL2_length $$ Hm
+  have hx := (List.getElem?_eq_some_iff.mp hmt).1
+  have ha : i.memory[x]? = some (i.memory[x]'(by omega)) := List.getElem?_eq_getElem _
+  ihave ⟨H, -⟩ := BigSepL2.bigSepL2_lookup_acc ha hmt $$ Hm
+  iexists i.memory[x]'(by omega)
+  isplitr
+  · ipureintro; exact ha
+  iexact H
 
 omit [LogrelNaInvs GF] in
 private theorem interp_val_length (τs : List ValueType) (vs : List Value) :
@@ -1098,8 +1047,8 @@ theorem interp_br_stuck_push (C : TContext) (j : Nat) (vh : ValidHoled j) (m : N
 instance interpVal_timeless (t : List ValueType) (v : Val) : Timeless (interpVal (GF := GF) t v) := by
   have : ∀ τ w, Timeless (interpValue (GF := GF) τ w) := by
     intro τ w
-    cases τ <;> unfold interpValue interpValueI32 interpValueI64 interpValueF32 interpValueF64 <;>
-      infer_instance
+    cases τ <;> unfold interpValue interpValueI32 interpValueI64 interpValueF32 interpValueF64
+      interpValueV128 <;> infer_instance
   unfold interpVal interpValues; infer_instance
 
 @[rocq_alias iriswasm.interp_br_stuck_push_later]

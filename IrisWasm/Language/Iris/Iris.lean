@@ -715,8 +715,6 @@ theorem val_head_stuck_reduce {s1 : StoreRecord} {f1 : Frame} {e1 : Expr} {s2 : 
   induction h with
   | simple hs =>
     cases hs with
-    | block _ hc _ _ _ => exact to_val_None_prepend_const _ _ hc (by simp [toVal, toValInstr])
-    | loop _ hc _ _ _ => exact to_val_None_prepend_const _ _ hc (by simp [toVal, toValInstr])
     | labelConst hc =>
       obtain ⟨vs, hv⟩ := const_list_to_val _ hc
       exact toVal_label_none (by simp [hv]) (by simp [hv]) (by simp [hv])
@@ -775,6 +773,8 @@ theorem val_head_stuck_reduce {s1 : StoreRecord} {f1 : Frame} {e1 : Expr} {s2 : 
         refine to_val_not_trap_interweave bef aft hc ?_
         cases bef <;> cases aft <;> simp_all
     | _ => simp [toVal, toValInstr, mergeValues]
+  | block _ hc _ | loop _ hc _ =>
+    exact to_val_None_prepend_const _ _ hc (by simp [toVal, toValInstr])
   | invokeNative _ _ _ _ _ _ _ _ _ _ hves =>
     subst hves
     exact to_val_None_prepend_const _ _ (v_to_e_is_const_list _) (by simp [toVal, toValInstr])

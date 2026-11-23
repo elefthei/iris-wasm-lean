@@ -6,7 +6,7 @@ Authors: Iris-Wasm Lean port contributors
 import IrisWasm.Examples.Stack.StackInstantiation
 import IrisWasm.Logrel.IrisInterpInstanceAlloc
 import IrisWasm.Rules.IrisExampleHelper
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/stack/stack_robust.v`.
 
@@ -29,7 +29,7 @@ def main : List BasicInstruction :=
     i32const (-1),
     .relop .i32 (.i .eq),
     -- If new_stack failed, trap
-    .if_ (.tf [] []) [.unreachable] [],
+    .if_ (.result none) [.unreachable] [],
     .getLocal 0,
     i32const 4,
     .call 4,
@@ -81,14 +81,8 @@ def clientGlobImpts : List ExternT := [.glob { mut_ := .mut, t := .i32 }]
 @[rocq_alias iriswasm.client_module_typing]
 theorem client_module_typing :
     ModuleTyping clientModule (clientFuncImpts ++ clientGlobImpts) [] := by
-  refine ⟨[.tf [] []], [], ?_⟩
-  refine ⟨.cons ⟨by decide, by decide, ?_⟩ .nil, by decide, by decide, .nil, ?_, by simp,
-    by decide, ?_, .nil⟩
-  · rw [← b_e_type_checker_reflects_typing]; rfl
-  · simp only [List.mem_singleton, forall_eq]
-    refine ⟨by decide, ?_, by decide, by decide⟩
-    rw [← b_e_type_checker_reflects_typing]; rfl
-  · repeat' first | exact .nil | refine .cons (by decide) ?_
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  kernel_rfl
 
 section Client_main
 variable {hlc : HasLC} {GF : BundledGFunctors} [WasmG hlc GF] [LogrelNaInvs GF]
@@ -266,12 +260,12 @@ theorem main_spec (C : TContext) (k idt : Nat) (locs : List ValueType) (es : Lis
   isplitr
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
-  · iapply wp_relop rfl $$ Hf
+  · iapply wp_relop rfl rfl .i32Agree rfl $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%Hw, Hf⟩
   subst Hw
   rw [show ∀ c : I32, ofVal (.immV [.int32 c]) ++ toEList (main.drop 4) =
-    ([.basic (.const (.int32 c)), .basic (.if_ (.tf [] []) [.unreachable] [])] : Expr) ++
+    ([.basic (.const (.int32 c)), .basic (.if_ (.result none) [.unreachable] [])] : Expr) ++
       toEList (main.drop 5) from fun _ => rfl]
   icases Hres with (⟨%Heq, Hnsa⟩ | ⟨%r, %Heq, %Hle, Hst, Hnsa⟩)
   · -- new stack failed: trap
@@ -308,9 +302,9 @@ theorem main_spec (C : TContext) (k idt : Nat) (locs : List ValueType) (es : Lis
   · iapply wp_if_false (by simp only [wasmBool, appRelop, appRelopI, Wasm.Int.ieq, beq_eq_false_iff_ne.2 hne,
       Bool.false_eq_true, ite_false]) $$ Hf
     inext; iintro Hf
-    rw [show ([.basic (.block (.tf [] []) [])] : Expr) = [] ++ [.basic (.block (.tf [] []) [])]
+    rw [show ([.basic (.block (.result none) [])] : Expr) = [] ++ [.basic (.block (.result none) [])]
       from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result none) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     inext; iintro Hf
     iapply wp_label_value rfl $$ Hf
     inext; ipureintro; rfl
@@ -391,7 +385,7 @@ theorem main_spec (C : TContext) (k idt : Nat) (locs : List ValueType) (es : Lis
       some a :: rest := by
     obtain ⟨n, hn⟩ : ∃ n, stacktab.data.length = n + 1 :=
       ⟨_, (Nat.succ_pred_eq_of_pos htablen).symm⟩
-    exact ⟨_, by simp [tableInitReplaceSingle, hn, natOfInt, Wasm.Int.repr]; rfl⟩
+    exact ⟨stacktab.data.tail, by simp [data_tableInitReplaceSingle, hn, natOfInt, Wasm.Int.repr]⟩
   obtain ⟨rest, hrest⟩ := hdata
   iunfold tabBlock at Hidt
   icases Hidt with ⟨Ht, -, -⟩
@@ -465,23 +459,12 @@ theorem main_spec (C : TContext) (k idt : Nat) (locs : List ValueType) (es : Lis
         imod Hcls $$ [Haf Hown] with Hown
         · iframe
         imodintro
-        ihave H : wpWasmCtxFrame .NotStuck ⊤ [.basic (.block (.tf [] [.i32]) es)]
-            (fun v => iprop((interpVal [.i32] v ∗ NonAtomicInvariant.own logrelNais ⊤) ∗
-              ↪[frame] fc))
-            1 ⟨[.int32 u] ++ nZeros locs, i⟩ 0 (.base [] []) $$ [Hf Hown]
-        · rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] [.i32]) es)]]
-          iapply wp_block_local_ctx (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-          inext
-          iintro Hf
-          iapply (wandIff_equiv (wp_wasm_empty_ctx_frame _ _ _ _ _ _)).1
-          unfold wpWasmFrame
-          simp only [List.nil_append]
-          ihave Hl := be_fundamental_local (GF := GF) C es [.i32] [.i32] locs hC htyp
-          iunfold semanticTypingLocalNoHost at Hl
-          icases Hl with ⟨-, Hl⟩
-          iunfold interpExpressionClosureNoHost at Hl
-          iapply Hl $$ %i Hi %fc %([.int32 u] ++ nZeros locs) Hf Hown
-          iunfold interpVal
+        ihave Hl := be_fundamental_local (GF := GF) C es [.i32] [.i32] locs hC htyp
+        iunfold semanticTypingLocalNoHost at Hl
+        icases Hl with ⟨-, Hl⟩
+        iunfold interpExpressionClosureNoHost at Hl
+        ihave H := Hl $$ %i Hi %fc %([.int32 u] ++ nZeros locs) Hf Hown []
+        · iunfold interpVal
           iright
           iunfold interpValues
           iexists [.int32 u] ++ nZeros locs
@@ -492,8 +475,6 @@ theorem main_spec (C : TContext) (k idt : Nat) (locs : List ValueType) (es : Lis
           isplitr
           · simp only [interpValue, interpValueI32]; ipureintro; exact ⟨u, rfl⟩
           iapply n_zeros_interp_values
-        unfold wpWasmCtxFrame
-        ispecialize H $$ %_ %(FundAux.lfilled_empty'.2 rfl)
         iapply wp_wand_s $$ H
         iintro %v ⟨⟨Hv, Hown⟩, Hf⟩
         iframe
@@ -603,14 +584,10 @@ private theorem client_start_spec (inst : Instance) (idnstart : Nat) (P R : IPro
   have hfb := wp_frame_bind (GF := GF) .NotStuck ⊤
     (fun w => iprop((⌜w = .trapV⌝ ∨ (⌜w = .immV []⌝ ∗ R)) ∗ ↪[frame] emptyFrame)) 0
     ⟨[] ++ nZeros [.i32], inst⟩ emptyFrame
-    [.basic (.block (.tf [] []) main)] (by simp [toVal, toValInstr, mergeValuesList])
+    [.label 0 [] (toEList main)] (toVal_native_frame_none _ _ _)
   unfold wpWasmFrame at hfb
   iapply hfb $$ Hf
   iintro Hf
-  rw [show ([.basic (.block (.tf [] []) main)] : Expr) =
-    [] ++ [.basic (.block (.tf [] []) main)] from rfl]
-  iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
-  inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   iapply wp_ctx_bind _ _ _ _ 1 (pushBase (.base [] []) 0 [] [] []) (by simp [BaseIsEmpty, pushBase])
@@ -677,7 +654,7 @@ private theorem adv_typing_facts (adv : Module)
   obtain ⟨fts, gts, h⟩ := htyp
   refine ⟨fts, gts, h, ?_⟩
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := adv
-  obtain ⟨hfs, -, -, -, -, -, -, himps, hexps⟩ := h
+  obtain ⟨hfs, -, -, -, -, -, -, himps, -, hexps⟩ := h
   cases himps
   cases hexps with
   | cons he hnil =>
@@ -689,12 +666,13 @@ private theorem adv_typing_facts (adv : Module)
   | func fi =>
     obtain ⟨nidx⟩ := fi
     have hft : fts[nidx]? = some (.tf [.i32] [.i32]) := by
-      simp [moduleExportTyping, extTFuncs] at he
+      simp [moduleExportTyping, moduleContext, extTFuncs] at he
       split at he <;> simp_all
     obtain ⟨⟨⟨k⟩, locs, body⟩, hmf, hty⟩ := forall2_lookup_r'' hfs hft
-    obtain ⟨-, hk, hbe⟩ := hty
-    refine ⟨nm, nidx, _, k, rfl, hmf, rfl, by simpa using hk, ?_⟩
-    simpa [updLocalLabelReturn] using hbe
+    obtain ⟨hk, hbe⟩ := hty
+    change tfs[k]? = _ at hk
+    refine ⟨nm, nidx, _, k, rfl, hmf, rfl, by simp [List.getD_eq_getElem?_getD, hk], ?_⟩
+    simpa [moduleContext, updLocalLabelReturn] using hbe
   | table t => obtain ⟨_⟩ := t; simp [moduleExportTyping] at he
   | mem m => obtain ⟨_⟩ := m; simp [moduleExportTyping] at he
   | global g => obtain ⟨_⟩ := g; simp [moduleExportTyping] at he
@@ -1031,7 +1009,7 @@ theorem instantiate_client (adv_module : Module) (g_ret : Nat) (wret : Value)
         simp [clientModule] at he
         subst he
         simp [assertConst1I32, i32const, extTabs, get?_insert_eq]
-        exact Htablen
+        exact (show 1 ≤ tab0.entries.size by simpa only [Tableinst.length_data] using Htablen)
       · ipureintro
         intro d hd
         simp [clientModule] at hd

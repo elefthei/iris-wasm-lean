@@ -3,6 +3,7 @@ Copyright (c) The Iris-Wasm Lean port contributors
 Released under MIT license as described in the file LICENSE.
 Authors: Iris-Wasm Lean port contributors
 -/
+import Wasm.TypePreservation
 import IrisWasm.Language.IrisWpDef
 import IrisWasm.Language.IrisAtomicity
 import IrisWasm.Helpers.IrisWasmDeterm
@@ -32,36 +33,42 @@ private theorem foldl_memUpdate {F : Nat × Option MemoryList → Byte → Nat �
     (start : Nat)
     (hF : ∀ k o x, F (k, o) x =
       (k + 1, match o with | none => none | some dat => dat.memUpdate (start + k) x)) :
-    ∀ (bs : Bytes) (i : Nat) (d : List Byte), start + i + bs.length ≤ d.length →
-      bs.foldl F (i, some ⟨d⟩) =
-        (i + bs.length, some ⟨d.take (start + i) ++ bs ++ d.drop (start + i + bs.length)⟩)
+    ∀ (bs : Bytes) (i : Nat) (d : MemoryList), start + i + bs.length ≤ d.data.length →
+      bs.foldl F (i, some d) = (i + bs.length, some (MemoryList.ofBytes
+        (d.data.take (start + i) ++ bs ++ d.data.drop (start + i + bs.length))))
   | [], i, d, _ => by simp
   | b :: bs, i, d, h => by
     simp only [List.length_cons] at h
     rw [List.foldl_cons, hF]
-    simp only [MemoryList.memUpdate, show start + i < d.length by omega, ite_true]
-    rw [foldl_memUpdate start hF bs (i + 1) _ (by simp; omega)]
-    simp only [List.length_cons, Option.some.injEq, Prod.mk.injEq, MemoryList.mk.injEq]
-    refine ⟨by omega, ?_⟩
+    have hi : start + i < d.data.length := by omega
+    dsimp only
+    rw [MemoryList.update_eq, if_pos (by simpa only [MemoryList.length_data] using hi)]
+    rw [foldl_memUpdate start hF bs (i + 1) _ (by
+      simp only [MemoryList.data_ofBytes, List.length_set]; omega)]
+    simp only [List.length_cons, Option.some.injEq, Prod.mk.injEq, MemoryList.data_ofBytes]
+    refine ⟨by omega, congrArg MemoryList.ofBytes ?_⟩
+    rw [List.set_eq_take_append_cons_drop]
+    simp only [hi, ↓reduceIte]
     rw [← Nat.add_assoc]
     list_ext
 
 theorem writeBytes_eq (m : Memory) (start : Nat) (bs : Bytes)
     (h : start + bs.length ≤ m.data.data.length) :
-    writeBytes m start bs = some ⟨⟨m.data.data.take start ++ bs ++
-      m.data.data.drop (start + bs.length)⟩, m.maxOpt⟩ := by
+    writeBytes m start bs = some ⟨MemoryList.ofBytes (m.data.data.take start ++ bs ++
+      m.data.data.drop (start + bs.length)), m.type⟩ := by
   unfold writeBytes foldLefti
-  rw [foldl_memUpdate start (fun _ _ _ => rfl) bs 0 m.data.data (by simpa using h)]
+  rw [foldl_memUpdate start (fun _ _ _ => rfl) bs 0 m.data (by simpa using h)]
   simp
 
 /-- `store` in closed form. -/
 theorem store_eq (m : Memory) (n : Nat) (off : StaticOffset) (bs : Bytes) (l : Nat) :
     store m n off bs l = if n + off + l ≤ lengthMem m then
-      some ⟨⟨m.data.data.take (n + off) ++ bytesTakefill 0 l bs ++
-        m.data.data.drop (n + off + l)⟩, m.maxOpt⟩ else none := by
+      some ⟨MemoryList.ofBytes (m.data.data.take (n + off) ++ bytesTakefill 0 l bs ++
+        m.data.data.drop (n + off + l)), m.type⟩ else none := by
   unfold store
   split
-  · rw [writeBytes_eq _ _ _ (by simpa [length_bytesTakefill, lengthMem, MemoryList.lengthMem])]
+  · rename_i hb
+    rw [writeBytes_eq _ _ _ (by simpa only [length_bytesTakefill, lengthMem_eq_data_length] using hb)]
     simp [length_bytesTakefill]
   · rfl
 
@@ -78,12 +85,12 @@ theorem load_eq (m : Memory) (n : Nat) (off : StaticOffset) (l : Nat) :
   unfold load
   split
   · rename_i h
-    simp only [lengthMem, MemoryList.lengthMem] at h
+    rw [lengthMem_eq_data_length] at h
     unfold readBytes
     rw [← those_map_some]
     congr 1
     apply List.ext_getElem? ; intro j
-    simp only [List.getElem?_map, List.getElem?_take, List.getElem?_drop, MemoryList.memLookup]
+    simp only [List.getElem?_map, List.getElem?_take, List.getElem?_drop, ← MemoryList.data_getElem?]
     grind
   · rfl
 
@@ -91,22 +98,21 @@ theorem load_eq (m : Memory) (n : Nat) (off : StaticOffset) (l : Nat) :
 @[rocq_alias iriswasm.mem_update_length]
 theorem mem_update_length (dat dat' : MemoryList) (k : Nat) (b : Byte)
     (h : MemoryList.memUpdate k b dat = some dat') : dat.data.length = dat'.data.length := by
-  simp only [MemoryList.memUpdate] at h
-  split at h
-  · cases h; simp; omega
-  · cases h
+  have hd : dat'.data = dat.data.set k b := by apply MemoryList.data_update; exact h
+  simp only [hd, List.length_set]
 
 @[rocq_alias iriswasm.length_store]
 theorem length_store (m m' : Memory) (n : Nat) (off : StaticOffset) (bs : Bytes)
     (h : store m n off bs bs.length = some m') : m.data.data.length = m'.data.data.length := by
   rw [store_eq] at h
   split at h
-  · cases h; simp [length_bytesTakefill, lengthMem, MemoryList.lengthMem] at *; omega
+  · cases h; simp only [MemoryList.data_ofBytes, lengthMem_eq_data_length, List.length_append,
+      List.length_take, List.length_drop, length_bytesTakefill] at *; omega
   · cases h
 
-@[rocq_alias iriswasm.store_mem_max_opt]
-theorem store_mem_max_opt (m m' : Memory) (n : Nat) (off : StaticOffset) (bs : Bytes) (l : Nat)
-    (h : store m n off bs l = some m') : m.maxOpt = m'.maxOpt := by
+#rocq_ignore iriswasm.store_mem_max_opt "writes preserve the complete memory type"
+theorem store_mem_type (m m' : Memory) (n : Nat) (off : StaticOffset) (bs : Bytes) (l : Nat)
+    (h : store m n off bs l = some m') : m.type = m'.type := by
   rw [store_eq] at h
   split at h
   · cases h; rfl
@@ -144,15 +150,16 @@ theorem trivial_update (m : Memory) (k : Nat) (b : Byte) (h : readBytes m k 1 = 
     MemoryList.memUpdate k b m.data = some m.data := by
   simp only [readBytes, List.range_one, List.map_cons, List.map_nil, Nat.add_zero] at h
   rw [← those_those0] at h
-  simp only [MemoryList.memLookup] at h
+  rw [← MemoryList.data_getElem?] at h
   cases hk : m.data.data[k]? with
   | none => simp [hk, those0] at h
   | some x =>
     simp only [hk, those0, Option.map_some, Option.some.injEq, List.cons.injEq, and_true] at h
     subst h
     have hlt : k < m.data.data.length := (List.getElem?_eq_some_iff.1 hk).1
-    simp only [MemoryList.memUpdate, hlt, ite_true, Option.some.injEq]
-    rw [List.append_assoc, list_trivial_replace _ _ _ hk]
+    rw [MemoryList.update_eq, if_pos (by simpa only [MemoryList.length_data] using hlt),
+      insert_take_drop _ _ _ hlt, List.append_assoc, list_trivial_replace _ _ _ hk,
+      MemoryList.ofBytes_data]
 
 @[rocq_alias iriswasm.incr_fst]
 def incrFst {A : Type} (a : Nat × A) : Nat × A := (a.1 + 1, a.2)
@@ -183,51 +190,48 @@ theorem store_append1 (m : Memory) (k : Nat) (off : StaticOffset) (b : Byte) (bs
   split at h
   · rename_i hle
     cases h
-    simp only [lengthMem, MemoryList.lengthMem, List.length_cons] at hle
-    refine ⟨_, ?_, by rw [store_eq, ite_eq_left (by simp [lengthMem, MemoryList.lengthMem]; omega)]⟩
-    rw [store_eq, ite_eq_left (by simp [lengthMem, MemoryList.lengthMem, length_bytesTakefill]; omega)]
+    simp only [lengthMem_eq_data_length, List.length_cons] at hle
+    refine ⟨_, ?_, by rw [store_eq, ite_eq_left (by rw [lengthMem_eq_data_length]; omega)]⟩
+    rw [store_eq, ite_eq_left (by
+      simp only [lengthMem_eq_data_length, MemoryList.data_ofBytes, List.length_take,
+        List.length_append, List.length_drop, length_bytesTakefill]; omega)]
     simp only [bytesTakefill, bytesTakefill_of_length, List.length_cons, Option.some.injEq,
-      Memory.mk.injEq, MemoryList.mk.injEq, and_true]
+      Memory.mk.injEq, and_true, MemoryList.data_ofBytes]
+    apply congrArg MemoryList.ofBytes
     list_ext
   · cases h
 
 
 theorem store_some_iff {m m' : Memory} {n : Nat} {off : StaticOffset} {bs : Bytes} {l : Nat} :
     store m n off bs l = some m' ↔ n + off + l ≤ m.data.data.length ∧
-      m' = ⟨⟨m.data.data.take (n + off) ++ bytesTakefill 0 l bs ++
-        m.data.data.drop (n + off + l)⟩, m.maxOpt⟩ := by
-  rw [store_eq]
-  split
-  · simp_all [lengthMem, MemoryList.lengthMem, eq_comm]
-  · simp only [reduceCtorEq, false_iff, not_and]
-    intro h; simp [lengthMem, MemoryList.lengthMem] at *; omega
+      m' = ⟨MemoryList.ofBytes (m.data.data.take (n + off) ++ bytesTakefill 0 l bs ++
+        m.data.data.drop (n + off + l)), m.type⟩ := by
+  rw [store_eq, lengthMem_eq_data_length]
+  split <;> simp_all [eq_comm] <;> omega
 
 theorem load_some_iff {m : Memory} {n : Nat} {off : StaticOffset} {l : Nat} {bs : Bytes} :
     load m n off l = some bs ↔ n + (off + l) ≤ m.data.data.length ∧
       (m.data.data.drop (n + off)).take l = bs := by
-  rw [load_eq]
-  split
-  · simp_all [lengthMem, MemoryList.lengthMem]
-  · simp only [reduceCtorEq, false_iff, not_and]
-    intro h; simp [lengthMem, MemoryList.lengthMem] at *; omega
+  rw [load_eq, lengthMem_eq_data_length]
+  split <;> simp_all <;> omega
 
 @[rocq_alias iriswasm.enough_space_to_store]
 theorem enough_space_to_store (m : Memory) (k : Nat) (off : StaticOffset) (bs : Bytes)
     (h : k + off + bs.length ≤ lengthMem m) : ∃ mf, store m k off bs bs.length = some mf :=
-  ⟨_, store_some_iff.2 ⟨h, rfl⟩⟩
+  ⟨_, store_some_iff.2 ⟨by rwa [← lengthMem_eq_data_length], rfl⟩⟩
 
 private theorem memUpdate_eq_set {i : Nat} {v : Byte} {ml : MemoryList} (h : i < ml.data.length) :
-    MemoryList.memUpdate i v ml = some ⟨ml.data.set i v⟩ := by
-  simp [MemoryList.memUpdate, h, List.set_eq_take_append_cons_drop]
+    MemoryList.memUpdate i v ml = some (MemoryList.ofBytes (ml.data.set i v)) := by
+  rw [MemoryList.update_eq, if_pos (by simpa only [MemoryList.length_data] using h)]
 
 @[rocq_alias iriswasm.mem_update_insert]
 theorem mem_update_insert (k : Nat) (b : Byte) (dat dat' : MemoryList)
     (h : MemoryList.memUpdate k b dat = some dat') :
-    dat' = ⟨dat.data.set k b⟩ ∧ k < dat.data.length := by
-  have hk : k < dat.data.length := by
-    simp only [MemoryList.memUpdate] at h; split at h <;> simp_all
-  rw [memUpdate_eq_set hk] at h
-  exact ⟨(Option.some.inj h).symm, hk⟩
+    dat' = MemoryList.ofBytes (dat.data.set k b) ∧ k < dat.data.length := by
+  rw [MemoryList.update_eq] at h
+  split at h
+  · exact ⟨(Option.some.inj h).symm, by simpa only [MemoryList.length_data] using ‹k < _›⟩
+  · cases h
 
 @[rocq_alias iriswasm.update_swap]
 theorem update_swap (k : Nat) (b : Byte) (dat : MemoryList) (k' : Nat) (b' : Byte)
@@ -236,9 +240,10 @@ theorem update_swap (k : Nat) (b : Byte) (dat : MemoryList) (k' : Nat) (b' : Byt
     ∃ dat0, MemoryList.memUpdate k' b' dat = some dat0 ∧ MemoryList.memUpdate k b dat0 = some dat'' := by
   obtain ⟨rfl, hk⟩ := mem_update_insert _ _ _ _ h
   obtain ⟨rfl, hk'⟩ := mem_update_insert _ _ _ _ h'
-  simp only [List.length_set] at hk'
+  simp only [MemoryList.data_ofBytes, List.length_set] at hk'
   refine ⟨_, memUpdate_eq_set hk', ?_⟩
-  rw [memUpdate_eq_set (by simpa using hk), List.set_comm _ _ hne]
+  rw [memUpdate_eq_set (by simpa only [MemoryList.data_ofBytes, List.length_set] using hk)]
+  simp only [MemoryList.data_ofBytes, List.set_comm _ _ hne]
 
 @[rocq_alias iriswasm.swap_stores]
 theorem swap_stores (m m' m'' : Memory) (k : Nat) (off : StaticOffset) (b : Byte) (bs : Bytes)
@@ -246,11 +251,13 @@ theorem swap_stores (m m' m'' : Memory) (k : Nat) (off : StaticOffset) (b : Byte
     ∃ m0, store m k (off + 1) bs bs.length = some m0 ∧ store m0 k off [b] 1 = some m'' := by
   obtain ⟨h1, rfl⟩ := store_some_iff.1 h
   obtain ⟨h2, rfl⟩ := store_some_iff.1 h'
-  simp only [List.length_append, List.length_take, List.length_drop, bytesTakefill,
+  simp only [MemoryList.data_ofBytes, List.length_append, List.length_take, List.length_drop, bytesTakefill,
     bytesTakefill_of_length, List.length_cons, List.length_nil] at h1 h2 ⊢
-  refine ⟨_, store_some_iff.2 ⟨by omega, rfl⟩, store_some_iff.2 ⟨by simp; omega, ?_⟩⟩
-  simp only [bytesTakefill, bytesTakefill_of_length, Memory.mk.injEq, MemoryList.mk.injEq,
-    and_true]
+  refine ⟨_, store_some_iff.2 ⟨by omega, rfl⟩,
+    store_some_iff.2 ⟨by simp only [MemoryList.data_ofBytes, List.length_append, List.length_take,
+      List.length_drop, length_bytesTakefill]; omega, ?_⟩⟩
+  simp only [bytesTakefill, bytesTakefill_of_length, Memory.mk.injEq, MemoryList.data_ofBytes, and_true]
+  apply congrArg MemoryList.ofBytes
   list_ext
 
 @[rocq_alias iriswasm.store_trivial]
@@ -258,9 +265,10 @@ theorem store_trivial (m : Memory) (k : Nat) (off : StaticOffset) (bs : Bytes)
     (h : load m k off bs.length = some bs) : store m k off bs bs.length = some m := by
   obtain ⟨h1, h2⟩ := load_some_iff.1 h
   refine store_some_iff.2 ⟨by omega, ?_⟩
-  obtain ⟨⟨d⟩, mo⟩ := m
-  simp only [bytesTakefill_of_length, Memory.mk.injEq, MemoryList.mk.injEq, and_true] at h2 ⊢
-  have e := List.take_append_drop bs.length (List.drop (k + off) d)
+  apply MemEquiv.eq
+  refine ⟨rfl, ?_⟩
+  simp only [bytesTakefill_of_length, MemoryList.data_ofBytes]
+  have e := List.take_append_drop bs.length (List.drop (k + off) m.data.data)
   rw [h2, List.drop_drop] at e
   rw [List.append_assoc, e, List.take_append_drop]
 
@@ -271,18 +279,10 @@ theorem store_append (m : Memory) (k : Nat) (off : StaticOffset) (b : Byte) (bs 
   obtain ⟨m0, hm0, hm0'⟩ := store_append1 m k off b bs m' h
   exact swap_stores m m0 m' k off b bs hm0' hm0
 
-@[rocq_alias iriswasm.mem_grow_max]
+#rocq_ignore iriswasm.mem_grow_max "growth preserves the maximum of the stored memory type"
 theorem mem_grow_max (m : Memory) (n : Nat) (m' : Memory) (h : memGrow m n = some m') :
-    m.maxOpt = m'.maxOpt := by
-  unfold memGrow at h
-  dsimp only at h
-  split at h
-  · split at h
-    · split at h
-      · cases h; rfl
-      · cases h
-    · cases h; rfl
-  · cases h
+    m.type.limits.max = m'.type.limits.max := by
+  rw [(memGrow_spec h).2.1]
 
 @[rocq_alias iriswasm.length_bits]
 theorem length_bits (v : Value) (t : ValueType) (h : typesAgree t v = true) :
@@ -292,8 +292,9 @@ theorem length_bits (v : Value) (t : ValueType) (h : typesAgree t v = true) :
 
 @[rocq_alias iriswasm.memory_in_bounds]
 theorem memory_in_bounds (m : Memory) (i : Nat) (b : Byte) (h : m.data.data[i]? = some b) :
-    i < lengthMem m :=
-  (List.getElem?_eq_some_iff.1 h).1
+    i < lengthMem m := by
+  rw [lengthMem_eq_data_length]
+  exact (List.getElem?_eq_some_iff.1 h).1
 
 @[rocq_alias iriswasm.iris_rules_resources.take_drop]
 theorem take_drop {A : Type} (n : Nat) (l : List A) : l = l.take n ++ l.drop n :=
@@ -330,7 +331,7 @@ theorem if_load_then_store (bs bs' : Bytes) (m : Memory) (k : Nat) (off : Static
 theorem length_load (m : Memory) (k : Nat) (off : StaticOffset) (len : Nat) (tl1 : Bytes)
     (h : load m k off len = some tl1) : tl1.length = len := by
   obtain ⟨h1, rfl⟩ := load_some_iff.1 h
-  simp; omega
+  simp only [List.length_take, List.length_drop]; omega
 
 @[rocq_alias iriswasm.if_load_then_store_weak]
 theorem if_load_then_store_weak (bs bs' : Bytes) (m : Memory) (k : Nat) (off : StaticOffset)
@@ -352,7 +353,7 @@ theorem drop_S_inv {A : Type} (n : Nat) (bs : List A) (b : A) (l : List A)
 theorem enough_space_to_store' (m : Memory) (k : Nat) (off : StaticOffset) (bs : Bytes) (len : Nat)
     (_hlen : len < bs.length) (h : k + off + len ≤ lengthMem m) :
     ∃ mf, store m k off bs len = some mf :=
-  ⟨_, store_some_iff.2 ⟨h, rfl⟩⟩
+  ⟨_, store_some_iff.2 ⟨by rwa [← lengthMem_eq_data_length], rfl⟩⟩
 
 @[rocq_alias iriswasm.store_weak]
 theorem store_weak (m : Memory) (k : Nat) (off : StaticOffset) (bs : Bytes) (m' : Memory)
@@ -360,14 +361,13 @@ theorem store_weak (m : Memory) (k : Nat) (off : StaticOffset) (bs : Bytes) (m' 
     ∃ m'', store m k off bs len' = some m'' :=
   ⟨_, store_some_iff.2 ⟨by have := (store_some_iff.1 h).1; omega, rfl⟩⟩
 
-@[rocq_alias iriswasm.if_load_then_store_packed]
 theorem if_load_then_store_packed (bs bs' : Bytes) (m : Memory) (k : Nat) (off : StaticOffset)
-    (len : Nat) (sx : Sx) (hlen : bs'.length ≤ bs.length)
-    (h : loadPacked sx m k off bs.length len = some bs) :
+    (packedLen len : Nat) (sx : Sx) (hlen : bs'.length ≤ packedLen)
+    (h : loadPacked sx m k off packedLen len = some bs) :
     ∃ m', storePacked m k off bs' bs'.length = some m' := by
-  have h' : load m k off bs.length = some bs := by
-    cases hl : load m k off bs.length <;> simp_all [loadPacked, signExtend]
-  exact if_load_then_store_weak bs bs' m k off hlen h'
+  obtain ⟨_, hl, _⟩ := Option.map_eq_some_iff.mp h
+  have := (load_some_iff.mp hl).1
+  exact ⟨_, store_some_iff.2 ⟨by omega, rfl⟩⟩
 
 @[rocq_alias iriswasm.bytes_takefill_idem]
 theorem bytes_takefill_idem (len : Nat) (bs : Bytes) :
@@ -381,13 +381,16 @@ theorem store_bytes_takefill_eq (m : Memory) (k : Nat) (off : StaticOffset) (len
     (bs : Bytes) : store m k off (bytesTakefill 0 len bs) len = store m k off bs len := by
   simp only [store, bytes_takefill_idem]
 
-@[rocq_alias iriswasm.store_mem_len_eq]
-theorem store_mem_len_eq (m : Memory) (k : Nat) (off : StaticOffset) (bv : Bytes) (mf : Memory)
+#rocq_ignore iriswasm.store_mem_len_eq "writes preserve address width, byte length, and declared minimum"
+theorem store_mem_meta_eq (m : Memory) (k : Nat) (off : StaticOffset) (bv : Bytes) (mf : Memory)
     (n : Nat) (mem : List Memory) (hm : mem[n]? = some m)
     (h : store m k off bv bv.length = some mf) :
-    (updateListAt mem n mf).map lengthMem = mem.map lengthMem := by
+    (updateListAt mem n mf).map memLengthMeta = mem.map memLengthMeta := by
   have hn := (List.getElem?_eq_some_iff.1 hm).1
-  have hl : lengthMem mf = lengthMem m := (length_store _ _ _ _ _ h).symm
+  have hl : lengthMem mf = lengthMem m := by
+    simpa only [lengthMem_eq_data_length] using (length_store _ _ _ _ _ h).symm
+  have hmeta : memLengthMeta mf = memLengthMeta m := by
+    simp only [memLengthMeta, hl, store_mem_type m mf k off bv _ h]
   have hu : updateListAt mem n mf = mem.set n mf := by
     simp [updateListAt, List.set_eq_take_append_cons_drop, hn]
   rw [hu, List.map_set]
@@ -441,8 +444,8 @@ theorem bits_deserialise (bs : Bytes) (t : ValueType) (h : bs.length = lengthT t
 theorem deserialise_type (bs : Bytes) (t : ValueType) : typesAgree t (wasmDeserialise bs t) = true := by
   cases t <;> rfl
 
-@[rocq_alias iriswasm.mem_in_bound]
-def MemInBound (c : Nat) : Prop := c ≤ pageLimit
+#rocq_ignore iriswasm.mem_in_bound "the page limit depends on the memory's address width"
+def MemInBound (aw : AddrType) (c : Nat) : Prop := c ≤ aw.pageLimit
 
 
 /-! ## Separation-logic rules -/
@@ -467,14 +470,14 @@ private theorem frame_lookup {locs : List Value} {inst : Instance} {f : Frame} {
 
 private theorem reduce_det_of {ws f es ws1 f1 es1 ws2 f2 es2}
     (h1 : Reduce ws f es ws1 f1 es1) (h2 : Reduce ws f es ws2 f2 es2)
-    (hgrow : ∀ i, firstInstr es ≠ some (.basic .growMemory, i) := by
+    (hgrow : ∀ x i, firstInstr es ≠ some (.basic (.growMemory x), i) := by
       simp [firstInstr_cons, firstInstrInstr])
     (htrap : ∀ i, firstInstr es ≠ some (.trap, i) := by
       simp [firstInstr_cons, firstInstrInstr]) :
     ws2 = ws1 ∧ f2 = f1 ∧ es2 = es1 := by
-  rcases reduce_det h1 h2 with h | ⟨i, h⟩ | ⟨i, -, -, h, -⟩
+  rcases reduce_det h1 h2 with h | ⟨x, i, h⟩ | ⟨i, -, -, h, -⟩
   · simp only [Prod.mk.injEq] at h; exact ⟨h.1.symm, h.2.1.symm, h.2.2.symm⟩
-  · exact absurd h (hgrow i)
+  · exact absurd h (hgrow x i)
   · exact absurd h (htrap i)
 
 /-- `genHeap_valid` without the update modality (and without consuming the resources). -/
@@ -484,10 +487,6 @@ private theorem heap_lookup {L V : Type _} {H : Type _ → Type _} [LawfulFinite
   unfold genHeapInterp pointsTo
   iintro ⟨%m, -, Hσ, -⟩ Hl
   iapply ghost_map_lookup $$ Hσ Hl
-
-private theorem smemInd_of {ws : StoreRecord} {f : Frame} {k : Nat}
-    (hk : f.inst.memory[0]? = some k) : smemInd ws f.inst = some k := by
-  unfold smemInd; cases h : f.inst.memory <;> simp_all
 
 /-- Every points-to of a big separating conjunction is backed by the heap. -/
 private theorem bigSep_valid {L V : Type _} {H : Type _ → Type _} [LawfulFiniteMap H L]
@@ -539,9 +538,9 @@ private theorem stateInterp_wasm {ws : StoreRecord} {locs : List Value} {inst : 
     genHeapInterp (G := WasmG.globHs) (gmapOfList ws.globals) ∗
     ghost_map_auth (WasmG.frameGName GF) (DFrac.own 1)
       (insert (PartialMap.empty : UnitMapF Frame) () ⟨locs, inst⟩) ∗
-    genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) ∗
+    genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) ∗
     genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (ws.tables.map tabSize)) ∗
-    genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) ∗
+    genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) ∗
     genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (ws.tables.map (·.maxOpt)))) := .rfl
 
 /-- `toVal` of an explicit instruction list. -/
@@ -600,36 +599,46 @@ private theorem wp_wasm_step {s : Stuckness} {E : CoPset} {es : Expr} {f f' : Fr
 @[rocq_alias iriswasm.mem_block_lookup_data]
 theorem mem_block_lookup_data (wms : List Memory) (n : Nat) (mem : Memory) :
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory wms) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (wms.map lengthMem)) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (wms.map memLengthMeta)) -∗
       n ↦[wmblock] mem -∗
       ⌜∃ m, wms[n]? = some m ∧ m.data.data = mem.data.data⌝ : IProp GF) := by
   unfold memBlock
-  iintro Hm Hms ⟨Hbytes, Hlen, -⟩
+  iintro Hm Hms ⟨-, Hbytes, Hlen, -⟩
   ihave %hlen := heap_lookup $$ Hms Hlen
   ihave %hb := bigSep_valid $$ Hbytes Hm
   ipureintro
   rw [gmap_of_list_lookup, List.getElem?_map] at hlen
-  obtain ⟨m, hm, hl⟩ := Option.map_eq_some_iff.1 hlen
-  refine ⟨m, hm, list_eq_of_lookup (by simpa [lengthMem, MemoryList.lengthMem] using hl) fun i b hbi => ?_⟩
+  obtain ⟨m, hm, he⟩ := Option.map_eq_some_iff.1 hlen
+  have hl : lengthMem m = lengthMem mem := congrArg (fun p => p.2.1) he
+  refine ⟨m, hm, list_eq_of_lookup (by simpa only [lengthMem_eq_data_length] using hl) fun i b hbi => ?_⟩
   rw [← get?_gmapOfMemory hm, hb i b hbi]
 
-@[rocq_alias iriswasm.mem_block_lookup]
+#rocq_ignore iriswasm.mem_block_lookup "ownership determines the complete stored memory type"
 theorem mem_block_lookup (wms : List Memory) (n : Nat) (mem : Memory) :
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory wms) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (wms.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (wms.map (·.maxOpt))) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (wms.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (wms.map (·.type.limits.max))) -∗
       n ↦[wmblock] mem -∗
-      ⌜∃ m, wms[n]? = some m ∧ m.data.data = mem.data.data ∧ m.maxOpt = mem.maxOpt⌝ : IProp GF) := by
+      ⌜∃ m, wms[n]? = some m ∧ m.data.data = mem.data.data ∧ m.type = mem.type⌝ : IProp GF) := by
   unfold memBlock
-  iintro Hm Hms Hml ⟨Hbytes, Hlen, Hlim⟩
+  iintro Hm Hms Hml ⟨%ha, Hbytes, Hlen, Hlim⟩
   ihave %hlen := heap_lookup $$ Hms Hlen
   ihave %hlim := heap_lookup $$ Hml Hlim
   ihave %hb := bigSep_valid $$ Hbytes Hm
   ipureintro
   rw [gmap_of_list_lookup, List.getElem?_map] at hlen hlim
-  obtain ⟨m, hm, hl⟩ := Option.map_eq_some_iff.1 hlen
+  obtain ⟨m, hm, he⟩ := Option.map_eq_some_iff.1 hlen
+  have hl : lengthMem m = lengthMem mem := congrArg (fun p => p.2.1) he
+  have hw : m.type.address = mem.type.address := congrArg Prod.fst he
+  have hmin : m.type.limits.min = lengthMem mem / pageSize := congrArg (fun p => p.2.2) he
+  have hmineq : m.type.limits.min = mem.type.limits.min := hmin.trans ha.min_eq.symm
   rw [hm] at hlim
-  refine ⟨m, hm, list_eq_of_lookup (by simpa [lengthMem, MemoryList.lengthMem] using hl) fun i b hbi => ?_, Option.some.inj hlim⟩
+  have hmax : m.type.limits.max = mem.type.limits.max := Option.some.inj hlim
+  have htype : m.type = mem.type := by
+    change MemoryType.mk m.type.address ⟨m.type.limits.min, m.type.limits.max⟩ = mem.type
+    rw [hw, hmineq, hmax]
+  refine ⟨m, hm, list_eq_of_lookup (by simpa only [lengthMem_eq_data_length] using hl)
+    fun i b hbi => ?_, htype⟩
   rw [← get?_gmapOfMemory hm, hb i b hbi]
 
 @[rocq_alias iriswasm.tab_block_lookup_data]
@@ -664,7 +673,9 @@ theorem tab_block_lookup (wts : List Tableinst) (n : Nat) (tab : Tableinst) :
   rw [gmap_of_list_lookup, List.getElem?_map] at hsize hlim
   obtain ⟨t, ht, hl⟩ := Option.map_eq_some_iff.1 hsize
   rw [ht] at hlim ⊢
-  have hdata := list_eq_of_lookup (by simpa [tabSize] using hl) fun i x hx => by rw [← get?_gmapOfTable ht, hb i x hx]
+  have hdata : t.data = tab.data := list_eq_of_lookup (by simpa [tabSize] using hl)
+    fun i x hx => by rw [← get?_gmapOfTable ht, hb i x hx]
+  have he : t.entries = tab.entries := RunTable.ext_toList hdata
   obtain ⟨d, o⟩ := t
   obtain ⟨d', o'⟩ := tab
   simp_all
@@ -829,12 +840,12 @@ private theorem set_take_drop {A : Type} (d bs' : List A) (b' : A) (p len : Nat)
   rw [h1, h2]; simp
 
 /-- Overwrite the bytes `bs` at position `p` of the memory `n` (data `d`) with `bs'`. -/
-private theorem heap_update_bytes (n : Nat) (o : Option Nat) (bs : Bytes) : ∀ (bs' : Bytes) (p : Nat)
-    (d : List Byte) (mems : List Memory), mems[n]? = some ⟨⟨d⟩, o⟩ → bs.length = bs'.length →
+private theorem heap_update_bytes (n : Nat) (o : MemoryType) (bs : Bytes) : ∀ (bs' : Bytes) (p : Nat)
+    (d : List Byte) (mems : List Memory), mems[n]? = some ⟨MemoryList.ofBytes d, o⟩ → bs.length = bs'.length →
     p + bs.length ≤ d.length →
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems) -∗ n ↦[wms][ p ] bs ==∗
       genHeapInterp (G := WasmG.memHs)
-        (gmapOfMemory (mems.set n ⟨⟨d.take p ++ bs' ++ d.drop (p + bs.length)⟩, o⟩)) ∗
+        (gmapOfMemory (mems.set n ⟨MemoryList.ofBytes (d.take p ++ bs' ++ d.drop (p + bs.length)), o⟩)) ∗
       n ↦[wms][ p ] bs' : IProp GF) := by
   induction bs with
   | nil =>
@@ -856,13 +867,16 @@ private theorem heap_update_bytes (n : Nat) (o : Option Nat) (bs : Bytes) : ∀ 
       simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen hp
       have hpd : p < d.length := by omega
       have hn : n < mems.length := (List.getElem?_eq_some_iff.1 hm).1
-      have key := ih bs' (p + 1) (d.set p b') (mems.set n ⟨⟨d.set p b'⟩, o⟩)
+      have key := ih bs' (p + 1) (d.set p b') (mems.set n ⟨MemoryList.ofBytes (d.set p b'), o⟩)
         (by rw [List.getElem?_set_self hn]) hlen (by simp; omega)
       rw [List.set_set, set_take_drop d bs' b' p bs.length (by omega)] at key
       iintro Hσ Hbs
       icases (wandIff_equiv (wms_append (GF := GF) n p b bs)).1 $$ Hbs with ⟨Hb, Hbs⟩
       imod @genHeap_update _ _ _ _ _ WasmG.memHs _ _ _ _ b' $$ [$Hσ $Hb] with ⟨Hσ, Hb⟩
-      rw [gmap_of_memory_insert n p b' mems ⟨⟨d⟩, o⟩ ⟨d.set p b'⟩ hm hpd (memUpdate_eq_set hpd)]
+      rw [gmap_of_memory_insert n p b' mems ⟨MemoryList.ofBytes d, o⟩
+        (MemoryList.ofBytes (d.set p b')) hm (by simpa only [MemoryList.data_ofBytes] using hpd)
+        (by simp only [MemoryList.update_eq, MemoryList.length_ofBytes, hpd, ↓reduceIte,
+              MemoryList.data_ofBytes])]
       imod key $$ Hσ Hbs with ⟨Hσ, Hbs⟩
       imodintro
       isplitl [Hσ]
@@ -879,12 +893,12 @@ theorem gen_heap_update_big_wm (bs bs' : Bytes) (k off n : Nat) (mems mems' : Li
     (hm : mems[n]? = some m) :
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems) -∗ n ↦[wms][ k + off ] bs ==∗
       genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems') ∗ n ↦[wms][ k + off ] bs' : IProp GF) := by
-  obtain ⟨⟨d⟩, o⟩ := m
   have hb := (load_some_iff.1 hload).1
   obtain ⟨-, rfl⟩ := store_some_iff.1 hstore
   subst hupd
   rw [← update_list_at_is_set_nth _ (List.getElem?_eq_some_iff.1 hm).1, bytesTakefill_of_length, ← hlen]
-  exact heap_update_bytes n o bs bs' (k + off) d mems hm hlen (by simp at hb; omega)
+  exact heap_update_bytes n m.type bs bs' (k + off) m.data.data mems
+    (by simpa only [MemoryList.ofBytes_data] using hm) hlen (by omega)
 
 @[rocq_alias iriswasm.wms_is_load]
 theorem wms_is_load (n k off : Nat) (bv : Bytes) (m : Memory) (ws : StoreRecord)
@@ -897,15 +911,14 @@ theorem wms_is_load (n k off : Nat) (bv : Bytes) (m : Memory) (ws : StoreRecord)
   ipureintro
   exact load_of_bytes hlen fun i b hb => by rw [← get?_gmapOfMemory hm]; exact h i b hb
 
-@[rocq_alias iriswasm.wms_is_load_packed]
 theorem wms_is_load_packed (n k off : Nat) (bv : Bytes) (m : Memory) (len : Nat) (ws : StoreRecord)
     (sx : Sx) (hlen : bv.length > 0) (hm : ws.mems[n]? = some m) :
     ⊢ (n ↦[wms][ k + off ] bv -∗ genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      ⌜loadPacked sx m k off bv.length len = some bv⌝ : IProp GF) := by
+      ⌜loadPacked sx m k off bv.length len = some (signExtend sx len bv)⌝ : IProp GF) := by
   iintro Hwms Hm
   ihave %h := wms_is_load n k off bv m ws hlen hm $$ Hwms Hm
   ipureintro
-  simp [loadPacked, h, signExtend]
+  simp [loadPacked, h]
 
 @[rocq_alias iriswasm.wms_implies_bounds]
 theorem wms_implies_bounds (n k off : Nat) (bv : Bytes) (ws : StoreRecord) (m : Memory)
@@ -916,64 +929,59 @@ theorem wms_implies_bounds (n k off : Nat) (bv : Bytes) (ws : StoreRecord) (m : 
   ihave %h := wms_is_load n k off bv m ws hlen hm $$ Hwms Hm
   ipureintro
   have := (load_some_iff.1 h).1
-  simp only [lengthMem, MemoryList.lengthMem]
+  rw [lengthMem_eq_data_length]
   omega
 
-@[rocq_alias iriswasm.wms_is_not_load]
+variable {aw : AddrType}
+
+#rocq_ignore iriswasm.wms_is_not_load "out-of-bounds reads use width-indexed extents"
 theorem wms_is_not_load (n k off len : Nat) (m : Memory) (ws : StoreRecord) (llen : Nat)
     (ht : k + off + llen > len) (hm : ws.mems[n]? = some m) :
-    ⊢ (n ↦[wmlength] len -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
+    ⊢ (n ↦[wmlength] (aw, len) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
       ⌜load m k off llen = none⌝ : IProp GF) := by
   iintro Hlen Hms
   ihave %h := heap_lookup $$ Hms Hlen
   ipureintro
   rw [gmap_of_list_lookup, List.getElem?_map, hm, Option.map_some, Option.some.injEq] at h
+  have hlen : lengthMem m = len := congrArg (fun p => p.2.1) h
   rw [load_eq]; split
   · omega
   · rfl
 
-@[rocq_alias iriswasm.wms_is_not_load_packed]
+#rocq_ignore iriswasm.wms_is_not_load_packed "packed reads use width-indexed extents"
 theorem wms_is_not_load_packed (n k off len : Nat) (m : Memory) (ws : StoreRecord) (llen len' : Nat)
     (sx : Sx) (ht : k + off + llen > len) (hm : ws.mems[n]? = some m) :
-    ⊢ (n ↦[wmlength] len -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
+    ⊢ (n ↦[wmlength] (aw, len) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
       ⌜loadPacked sx m k off llen len' = none⌝ : IProp GF) := by
   iintro Hlen Hms
-  ihave %h := heap_lookup $$ Hms Hlen
+  ihave %h := wms_is_not_load n k off len m ws llen ht hm $$ Hlen Hms
   ipureintro
-  rw [gmap_of_list_lookup, List.getElem?_map, hm, Option.map_some, Option.some.injEq] at h
-  rw [loadPacked, load_eq]; split
-  · omega
-  · rfl
+  simp [loadPacked, h]
 
-@[rocq_alias iriswasm.wms_is_not_store]
+#rocq_ignore iriswasm.wms_is_not_store "out-of-bounds writes use width-indexed extents"
 theorem wms_is_not_store (n k off len : Nat) (m : Memory) (ws : StoreRecord) (llen : Nat)
     (bv : Bytes) (ht : k + off + llen > len) (hm : ws.mems[n]? = some m) :
-    ⊢ (n ↦[wmlength] len -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
+    ⊢ (n ↦[wmlength] (aw, len) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
       ⌜store m k off bv llen = none⌝ : IProp GF) := by
   iintro Hlen Hms
   ihave %h := heap_lookup $$ Hms Hlen
   ipureintro
   rw [gmap_of_list_lookup, List.getElem?_map, hm, Option.map_some, Option.some.injEq] at h
+  have hlen : lengthMem m = len := congrArg (fun p => p.2.1) h
   rw [store_eq]; split
   · omega
   · rfl
 
-@[rocq_alias iriswasm.wms_is_not_store_packed]
+#rocq_ignore iriswasm.wms_is_not_store_packed "packed writes use width-indexed extents"
 theorem wms_is_not_store_packed (n k off len : Nat) (m : Memory) (ws : StoreRecord) (llen : Nat)
     (bv : Bytes) (ht : k + off + llen > len) (hm : ws.mems[n]? = some m) :
-    ⊢ (n ↦[wmlength] len -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      ⌜storePacked m k off bv llen = none⌝ : IProp GF) := by
-  iintro Hlen Hms
-  ihave %h := heap_lookup $$ Hms Hlen
-  ipureintro
-  rw [gmap_of_list_lookup, List.getElem?_map, hm, Option.map_some, Option.some.injEq] at h
-  rw [storePacked, store_eq]; split
-  · omega
-  · rfl
+    ⊢ (n ↦[wmlength] (aw, len) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      ⌜storePacked m k off bv llen = none⌝ : IProp GF) :=
+  wms_is_not_store n k off len m ws llen bv ht hm
 
 @[rocq_alias iriswasm.wms_implies_smems_is_Some]
 theorem wms_implies_smems_is_Some (ws : StoreRecord) (n k : Nat) (b : Byte) (bs : Bytes) :
@@ -1010,27 +1018,28 @@ private theorem map_updateListAt {A B : Type} (g : A → B) {l : List A} {i : Na
   rw [List.getElem?_set]
   split <;> simp_all
 
-@[rocq_alias iriswasm.wp_load_deserialize]
+variable {x : Nat}
+
 theorem wp_load_deserialize (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType)
-    (bv : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f0 : Frame)
-    (hlen : bv.length = lengthT t) (hn : f0.inst.memory[0]? = some n) :
+    (bv : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f0 : Frame)
+    (hlen : bv.length = lengthT t) (hn : f0.inst.memory[x]? = some n) :
     iprop(▷ Φ (.immV [wasmDeserialise bv t]) ∗ ↪[frame] f0 ∗
-      n ↦[wms][ Wasm.Int.nOfUint k + off ] bv) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.load t none a off)] : Expr) @ s ; E
-      {{ w, (Φ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv) ∗ ↪[frame] f0 }} := by
+      n ↦[wms][ k.unsigned + off ] bv) ⊢
+    WP ([.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ n ↦[wms][ k.unsigned + off ] bv) ∗ ↪[frame] f0 }} := by
   have hpos : bv.length > 0 := by rw [hlen]; cases t <;> decide
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(Φ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv))
-    (R := iprop(▷ Φ (.immV [wasmDeserialise bv t]) ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv))
-    (es := [.basic (.const (.int32 k)), .basic (.load t none a off)]) (by solve_toVal) fun ws => by
+    (Φ := fun w => iprop(Φ w ∗ n ↦[wms][ k.unsigned + off ] bv))
+    (R := iprop(▷ Φ (.immV [wasmDeserialise bv t]) ∗ n ↦[wms][ k.unsigned + off ] bv))
+    (es := [.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)]) (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hwms⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hm := wms_mems_some hpos $$ [$Hwms] [$Hm]
       obtain ⟨m, hm⟩ := hm
-      ihave %hload := wms_is_load n (Wasm.Int.nOfUint k) off bv m ws hpos hm $$ [$Hwms] [$Hm]
-      have hred : Reduce ws f0 [.basic (.const (.int32 k)), .basic (.load t none a off)] ws f0
+      ihave %hload := wms_is_load n k.unsigned off bv m ws hpos hm $$ [$Hwms] [$Hm]
+      have hred : Reduce ws f0 [.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)] ws f0
           [.basic (.const (wasmDeserialise bv t))] :=
-        .loadSuccess n m (smemInd_of hn) hm (by rw [← hlen]; exact hload)
+        .loadSuccess n m hn hm (by rw [← hlen]; exact hload)
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1043,40 +1052,39 @@ theorem wp_load_deserialize (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset)
   iapply key $$ [HΦ Hwms] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_load]
 theorem wp_load (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType) (v : Value)
-    (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f : Frame)
-    (ht : typesAgree t v = true) (hn : f.inst.memory[0]? = some n) :
-    iprop(▷ Φ (.immV [v]) ∗ ↪[frame] f ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] (bits v)) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.load t none a off)] : Expr) @ s ; E
-      {{ w, (Φ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] (bits v)) ∗ ↪[frame] f }} := by
+    (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f : Frame)
+    (ht : typesAgree t v = true) (hn : f.inst.memory[x]? = some n) :
+    iprop(▷ Φ (.immV [v]) ∗ ↪[frame] f ∗ n ↦[wms][ k.unsigned + off ] (bits v)) ⊢
+    WP ([.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ n ↦[wms][ k.unsigned + off ] (bits v)) ∗ ↪[frame] f }} := by
   have h := wp_load_deserialize Φ s E t (bits v) off a k n f (length_bits v t ht) hn
   rwa [deserialise_bits v t ht] at h
 
-@[rocq_alias iriswasm.wp_load_packed_deserialize]
 theorem wp_load_packed_deserialize (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset)
-    (t : ValueType) (bv : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat)
+    (t : ValueType) (bv : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat)
     (f0 : Frame) (tp : PackedType) (sx : Sx) (hlen : bv.length = lengthTp tp)
-    (hn : f0.inst.memory[0]? = some n) :
-    iprop(▷ Φ (.immV [wasmDeserialise bv t]) ∗ ↪[frame] f0 ∗
-      n ↦[wms][ Wasm.Int.nOfUint k + off ] bv) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)] : Expr) @ s ; E
-      {{ w, (Φ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv) ∗ ↪[frame] f0 }} := by
+    (htp : packedTypeOK tp t = true) (hn : f0.inst.memory[x]? = some n) :
+    iprop(▷ Φ (.immV [wasmDeserialise (signExtend sx (lengthT t) bv) t]) ∗ ↪[frame] f0 ∗
+      n ↦[wms][ k.unsigned + off ] bv) ⊢
+    WP ([.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ n ↦[wms][ k.unsigned + off ] bv) ∗ ↪[frame] f0 }} := by
   have hpos : bv.length > 0 := by rw [hlen]; cases tp <;> decide
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(Φ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv))
-    (R := iprop(▷ Φ (.immV [wasmDeserialise bv t]) ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bv))
-    (es := [.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)]) (by solve_toVal)
+    (Φ := fun w => iprop(Φ w ∗ n ↦[wms][ k.unsigned + off ] bv))
+    (R := iprop(▷ Φ (.immV [wasmDeserialise (signExtend sx (lengthT t) bv) t]) ∗
+      n ↦[wms][ k.unsigned + off ] bv))
+    (es := [.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)]) (by solve_toVal)
     fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hwms⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hm := wms_mems_some hpos $$ [$Hwms] [$Hm]
       obtain ⟨m, hm⟩ := hm
-      ihave %hload := wms_is_load_packed n (Wasm.Int.nOfUint k) off bv m (lengthT t) ws sx hpos hm
+      ihave %hload := wms_is_load_packed n k.unsigned off bv m (lengthT t) ws sx hpos hm
         $$ [$Hwms] [$Hm]
-      have hred : Reduce ws f0 [.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)]
-          ws f0 [.basic (.const (wasmDeserialise bv t))] :=
-        .loadPackedSuccess n m (smemInd_of hn) hm (by rw [← hlen]; exact hload)
+      have hred : Reduce ws f0 [.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)]
+          ws f0 [.basic (.const (wasmDeserialise (signExtend sx (lengthT t) bv) t))] :=
+        .loadPackedSuccess n m htp hn hm (by rw [← hlen]; exact hload)
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1089,25 +1097,25 @@ theorem wp_load_packed_deserialize (Φ : Val → IProp GF) (s : Stuckness) (E : 
   iapply key $$ [HΦ Hwms] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_load_failure]
 theorem wp_load_failure (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset) (off : StaticOffset)
-    (a : AlignmentExponent) (k : I32) (n : Nat) (f0 : Frame) (t : ValueType) (len : Nat)
-    (hn : f0.inst.memory[0]? = some n) (hk : Wasm.Int.nOfUint k + off + lengthT t > len) :
-    iprop(▷ Φ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] len) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.load t none a off)] : Expr) @ s ; E
-      {{ w, (Φ w ∗ n ↦[wmlength] len) ∗ ↪[frame] f0 }} := by
+    (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f0 : Frame) (t : ValueType) (len : Nat)
+    (hn : f0.inst.memory[x]? = some n) (hk : k.unsigned + off + lengthT t > len) :
+    iprop(▷ Φ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] (aw, len)) ⊢
+    WP ([.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ n ↦[wmlength] (aw, len)) ∗ ↪[frame] f0 }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(Φ w ∗ n ↦[wmlength] len)) (R := iprop(▷ Φ .trapV ∗ n ↦[wmlength] len))
-    (es := [.basic (.const (.int32 k)), .basic (.load t none a off)]) (by solve_toVal) fun ws => by
+    (Φ := fun w => iprop(Φ w ∗ n ↦[wmlength] (aw, len)))
+    (R := iprop(▷ Φ .trapV ∗ n ↦[wmlength] (aw, len)))
+    (es := [.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)]) (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hn⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
       obtain ⟨m, hm, -⟩ := Option.map_eq_some_iff.1 hms
-      ihave %hnone := wms_is_not_load n (Wasm.Int.nOfUint k) off len m ws (lengthT t) hk hm
+      ihave %hnone := wms_is_not_load n k.unsigned off len m ws (lengthT t) hk hm
         $$ [$Hn] [$Hms]
-      have hred : Reduce ws f0 [.basic (.const (.int32 k)), .basic (.load t none a off)] ws f0
-          [.trap] := .loadFailure n m (smemInd_of hn) hm hnone
+      have hred : Reduce ws f0 [.basic (.const k.value), .basic (.load t none ⟨x, a, off⟩)] ws f0
+          [.trap] := .loadFailure n m hn hm hnone
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1120,27 +1128,27 @@ theorem wp_load_failure (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset) (of
   iapply key $$ [HΦ Hn] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_load_packed_failure]
 theorem wp_load_packed_failure (Φ : Val → IProp GF) (s : Stuckness) (E : CoPset)
-    (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f0 : Frame) (t : ValueType)
-    (len : Nat) (tp : PackedType) (sx : Sx) (hn : f0.inst.memory[0]? = some n)
-    (hk : Wasm.Int.nOfUint k + off + lengthTp tp > len) :
-    iprop(▷ Φ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] len) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)] : Expr) @ s ; E
-      {{ w, (Φ w ∗ n ↦[wmlength] len) ∗ ↪[frame] f0 }} := by
+    (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f0 : Frame) (t : ValueType)
+    (len : Nat) (tp : PackedType) (sx : Sx) (hn : f0.inst.memory[x]? = some n)
+    (htp : packedTypeOK tp t = true) (hk : k.unsigned + off + lengthTp tp > len) :
+    iprop(▷ Φ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] (aw, len)) ⊢
+    WP ([.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ n ↦[wmlength] (aw, len)) ∗ ↪[frame] f0 }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(Φ w ∗ n ↦[wmlength] len)) (R := iprop(▷ Φ .trapV ∗ n ↦[wmlength] len))
-    (es := [.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)]) (by solve_toVal)
+    (Φ := fun w => iprop(Φ w ∗ n ↦[wmlength] (aw, len)))
+    (R := iprop(▷ Φ .trapV ∗ n ↦[wmlength] (aw, len)))
+    (es := [.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)]) (by solve_toVal)
     fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hn⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
       obtain ⟨m, hm, -⟩ := Option.map_eq_some_iff.1 hms
-      ihave %hnone := wms_is_not_load_packed n (Wasm.Int.nOfUint k) off len m ws (lengthTp tp)
+      ihave %hnone := wms_is_not_load_packed n k.unsigned off len m ws (lengthTp tp)
         (lengthT t) sx hk hm $$ [$Hn] [$Hms]
-      have hred : Reduce ws f0 [.basic (.const (.int32 k)), .basic (.load t (some (tp, sx)) a off)]
-          ws f0 [.trap] := .loadPackedFailure n m (smemInd_of hn) hm hnone
+      have hred : Reduce ws f0 [.basic (.const k.value), .basic (.load t (some (tp, sx)) ⟨x, a, off⟩)]
+          ws f0 [.trap] := .loadPackedFailure n m htp hn hm hnone
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1153,42 +1161,42 @@ theorem wp_load_packed_failure (Φ : Val → IProp GF) (s : Stuckness) (E : CoPs
   iapply key $$ [HΦ Hn] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_store]
 theorem wp_store (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType) (v : Value)
-    (bs : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f : Frame)
+    (bs : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f : Frame)
     (ht : typesAgree t v = true) (hlen : bs.length = lengthT t)
-    (hn : f.inst.memory[0]? = some n) :
-    iprop(▷ ϕ (.immV []) ∗ ↪[frame] f ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bs) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)] : Expr)
-      @ s ; E {{ w, (ϕ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] (bits v)) ∗ ↪[frame] f }} := by
+    (hn : f.inst.memory[x]? = some n) :
+    iprop(▷ ϕ (.immV []) ∗ ↪[frame] f ∗ n ↦[wms][ k.unsigned + off ] bs) ⊢
+    WP ([.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)] : Expr)
+      @ s ; E {{ w, (ϕ w ∗ n ↦[wms][ k.unsigned + off ] (bits v)) ∗ ↪[frame] f }} := by
   have hpos : bs.length > 0 := by rw [hlen]; cases t <;> decide
   have hbits := length_bits v t ht
   have key := wp_wasm_step (s := s) (E := E) (f := f) (f' := f)
-    (Φ := fun w => iprop(ϕ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] (bits v)))
-    (R := iprop(▷ ϕ (.immV []) ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bs))
-    (es := [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)])
+    (Φ := fun w => iprop(ϕ w ∗ n ↦[wms][ k.unsigned + off ] (bits v)))
+    (R := iprop(▷ ϕ (.immV []) ∗ n ↦[wms][ k.unsigned + off ] bs))
+    (es := [.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)])
     (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hwms⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hm := wms_mems_some hpos $$ [$Hwms] [$Hm]
       obtain ⟨m, hm⟩ := hm
-      ihave %hload := wms_is_load n (Wasm.Int.nOfUint k) off bs m ws hpos hm $$ [$Hwms] [$Hm]
+      ihave %hload := wms_is_load n k.unsigned off bs m ws hpos hm $$ [$Hwms] [$Hm]
       have hbound := (load_some_iff.1 hload).1
-      obtain ⟨m', hst⟩ := enough_space_to_store m (Wasm.Int.nOfUint k) off (bits v)
-        (by simp only [lengthMem, MemoryList.lengthMem]; omega)
+      obtain ⟨m', hst⟩ := enough_space_to_store m k.unsigned off (bits v)
+        (by rw [lengthMem_eq_data_length]; omega)
       have hred : Reduce ws f
-          [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)]
+          [.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)]
           (updSMem ws (updateListAt ws.mems n m')) f [] :=
-        .storeSuccess m ht (smemInd_of hn) hm (by rw [← hbits]; exact hst)
+        .storeSuccess m ht hn hm (by rw [← hbits]; exact hst)
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
       obtain ⟨rfl, rfl, rfl⟩ := reduce_det_of hred Hred
-      imod gen_heap_update_big_wm bs (bits v) (Wasm.Int.nOfUint k) off n ws.mems _ m m' (by omega)
+      imod gen_heap_update_big_wm bs (bits v) k.unsigned off n ws.mems _ m m' (by omega)
         hload hst rfl hm $$ Hm Hwms with ⟨Hm, Hwms⟩
       simp only [updSMem]
-      rw [store_mem_len_eq m _ off (bits v) m' n ws.mems hm hst,
-        map_updateListAt (·.maxOpt) hm (store_mem_max_opt _ _ _ _ _ _ hst).symm]
+      rw [store_mem_meta_eq m _ off (bits v) m' n ws.mems hm hst,
+        map_updateListAt (·.type.limits.max) hm
+          (congrArg (fun mt : MemoryType => mt.limits.max) (store_mem_type _ _ _ _ _ _ hst)).symm]
       imodintro
       iframe
       ipureintro
@@ -1197,47 +1205,47 @@ theorem wp_store (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : Value
   iapply key $$ [HΦ Hwms] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_store_packed]
 theorem wp_store_packed (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType)
-    (v : Value) (bs : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat)
+    (v : Value) (bs : Bytes) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat)
     (f0 : Frame) (tp : PackedType) (ht : typesAgree t v = true) (hlen : bs.length = lengthTp tp)
-    (htp : lengthTp tp < lengthT t) (hn : f0.inst.memory[0]? = some n) :
-    iprop(▷ ϕ (.immV []) ∗ ↪[frame] f0 ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bs) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)] : Expr)
-      @ s ; E {{ w, (ϕ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ]
+    (htp : packedTypeOK tp t = true) (hn : f0.inst.memory[x]? = some n) :
+    iprop(▷ ϕ (.immV []) ∗ ↪[frame] f0 ∗ n ↦[wms][ k.unsigned + off ] bs) ⊢
+    WP ([.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)] : Expr)
+      @ s ; E {{ w, (ϕ w ∗ n ↦[wms][ k.unsigned + off ]
         (bytesTakefill 0 (lengthTp tp) (bits v))) ∗ ↪[frame] f0 }} := by
   have hpos : bs.length > 0 := by rw [hlen]; cases tp <;> decide
   have hbs' := length_bytes_takefill 0 (lengthTp tp) (bits v)
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(ϕ w ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ]
+    (Φ := fun w => iprop(ϕ w ∗ n ↦[wms][ k.unsigned + off ]
       (bytesTakefill 0 (lengthTp tp) (bits v))))
-    (R := iprop(▷ ϕ (.immV []) ∗ n ↦[wms][ Wasm.Int.nOfUint k + off ] bs))
-    (es := [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)])
+    (R := iprop(▷ ϕ (.immV []) ∗ n ↦[wms][ k.unsigned + off ] bs))
+    (es := [.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)])
     (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hwms⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hm := wms_mems_some hpos $$ [$Hwms] [$Hm]
       obtain ⟨m, hm⟩ := hm
-      ihave %hload := wms_is_load n (Wasm.Int.nOfUint k) off bs m ws hpos hm $$ [$Hwms] [$Hm]
+      ihave %hload := wms_is_load n k.unsigned off bs m ws hpos hm $$ [$Hwms] [$Hm]
       have hbound := (load_some_iff.1 hload).1
-      obtain ⟨m', hst⟩ : ∃ m', store m (Wasm.Int.nOfUint k) off (bits v) (lengthTp tp) = some m' :=
+      obtain ⟨m', hst⟩ : ∃ m', store m k.unsigned off (bits v) (lengthTp tp) = some m' :=
         ⟨_, store_some_iff.2 ⟨by omega, rfl⟩⟩
-      have hst' : store m (Wasm.Int.nOfUint k) off (bytesTakefill 0 (lengthTp tp) (bits v))
+      have hst' : store m k.unsigned off (bytesTakefill 0 (lengthTp tp) (bits v))
           (bytesTakefill 0 (lengthTp tp) (bits v)).length = some m' := by
         rw [hbs', store_bytes_takefill_eq]; exact hst
       have hred : Reduce ws f0
-          [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)]
+          [.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)]
           (updSMem ws (updateListAt ws.mems n m')) f0 [] :=
-        .storePackedSuccess m ht (smemInd_of hn) hm hst
+        .storePackedSuccess m htp ht hn hm hst
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
       obtain ⟨rfl, rfl, rfl⟩ := reduce_det_of hred Hred
-      imod gen_heap_update_big_wm bs _ (Wasm.Int.nOfUint k) off n ws.mems _ m m' (by omega)
+      imod gen_heap_update_big_wm bs _ k.unsigned off n ws.mems _ m m' (by omega)
         hload hst' rfl hm $$ Hm Hwms with ⟨Hm, Hwms⟩
       simp only [updSMem]
-      rw [store_mem_len_eq m _ off _ m' n ws.mems hm hst',
-        map_updateListAt (·.maxOpt) hm (store_mem_max_opt _ _ _ _ _ _ hst).symm]
+      rw [store_mem_meta_eq m _ off _ m' n ws.mems hm hst',
+        map_updateListAt (·.type.limits.max) hm
+          (congrArg (fun mt : MemoryType => mt.limits.max) (store_mem_type _ _ _ _ _ _ hst)).symm]
       imodintro
       iframe
       ipureintro
@@ -1246,28 +1254,28 @@ theorem wp_store_packed (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t 
   iapply key $$ [HΦ Hwms] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_store_failure]
 theorem wp_store_failure (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType)
-    (v : Value) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f0 : Frame)
-    (len : Nat) (ht : typesAgree t v = true) (hn : f0.inst.memory[0]? = some n)
-    (hk : Wasm.Int.nOfUint k + off + lengthT t > len) :
-    iprop(▷ ϕ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] len) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)] : Expr)
-      @ s ; E {{ w, (ϕ w ∗ n ↦[wmlength] len) ∗ ↪[frame] f0 }} := by
+    (v : Value) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f0 : Frame)
+    (len : Nat) (ht : typesAgree t v = true) (hn : f0.inst.memory[x]? = some n)
+    (hk : k.unsigned + off + lengthT t > len) :
+    iprop(▷ ϕ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] (aw, len)) ⊢
+    WP ([.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)] : Expr)
+      @ s ; E {{ w, (ϕ w ∗ n ↦[wmlength] (aw, len)) ∗ ↪[frame] f0 }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(ϕ w ∗ n ↦[wmlength] len)) (R := iprop(▷ ϕ .trapV ∗ n ↦[wmlength] len))
-    (es := [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)])
+    (Φ := fun w => iprop(ϕ w ∗ n ↦[wmlength] (aw, len)))
+    (R := iprop(▷ ϕ .trapV ∗ n ↦[wmlength] (aw, len)))
+    (es := [.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)])
     (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hn⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
       obtain ⟨m, hm, -⟩ := Option.map_eq_some_iff.1 hms
-      ihave %hnone := wms_is_not_store n (Wasm.Int.nOfUint k) off len m ws (lengthT t) (bits v) hk hm
+      ihave %hnone := wms_is_not_store n k.unsigned off len m ws (lengthT t) (bits v) hk hm
         $$ [$Hn] [$Hms]
       have hred : Reduce ws f0
-          [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t none a off)] ws f0
-          [.trap] := .storeFailure n m ht (smemInd_of hn) hm hnone
+          [.basic (.const k.value), .basic (.const v), .basic (.store t none ⟨x, a, off⟩)] ws f0
+          [.trap] := .storeFailure n m ht hn hm hnone
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1280,28 +1288,28 @@ theorem wp_store_failure (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t
   iapply key $$ [HΦ Hn] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_store_packed_failure]
 theorem wp_store_packed_failure (ϕ : Val → IProp GF) (s : Stuckness) (E : CoPset) (t : ValueType)
-    (v : Value) (off : StaticOffset) (a : AlignmentExponent) (k : I32) (n : Nat) (f0 : Frame)
-    (len : Nat) (tp : PackedType) (ht : typesAgree t v = true) (hn : f0.inst.memory[0]? = some n)
-    (hk : Wasm.Int.nOfUint k + off + lengthTp tp > len) :
-    iprop(▷ ϕ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] len) ⊢
-    WP ([.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)] : Expr)
-      @ s ; E {{ w, (ϕ w ∗ n ↦[wmlength] len) ∗ ↪[frame] f0 }} := by
+    (v : Value) (off : StaticOffset) (a : AlignmentExponent) (k : AddressOperand) (n : Nat) (f0 : Frame)
+    (len : Nat) (tp : PackedType) (ht : typesAgree t v = true) (hn : f0.inst.memory[x]? = some n)
+    (htp : packedTypeOK tp t = true) (hk : k.unsigned + off + lengthTp tp > len) :
+    iprop(▷ ϕ .trapV ∗ ↪[frame] f0 ∗ n ↦[wmlength] (aw, len)) ⊢
+    WP ([.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)] : Expr)
+      @ s ; E {{ w, (ϕ w ∗ n ↦[wmlength] (aw, len)) ∗ ↪[frame] f0 }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f0) (f' := f0)
-    (Φ := fun w => iprop(ϕ w ∗ n ↦[wmlength] len)) (R := iprop(▷ ϕ .trapV ∗ n ↦[wmlength] len))
-    (es := [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)])
+    (Φ := fun w => iprop(ϕ w ∗ n ↦[wmlength] (aw, len)))
+    (R := iprop(▷ ϕ .trapV ∗ n ↦[wmlength] (aw, len)))
+    (es := [.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)])
     (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hn⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
       obtain ⟨m, hm, -⟩ := Option.map_eq_some_iff.1 hms
-      ihave %hnone := wms_is_not_store_packed n (Wasm.Int.nOfUint k) off len m ws (lengthTp tp)
+      ihave %hnone := wms_is_not_store_packed n k.unsigned off len m ws (lengthTp tp)
         (bits v) hk hm $$ [$Hn] [$Hms]
       have hred : Reduce ws f0
-          [.basic (.const (.int32 k)), .basic (.const v), .basic (.store t (some tp) a off)] ws f0
-          [.trap] := .storePackedFailure n m ht (smemInd_of hn) hm hnone
+          [.basic (.const k.value), .basic (.const v), .basic (.store t (some tp) ⟨x, a, off⟩)] ws f0
+          [.trap] := .storePackedFailure n m htp ht hn hm hnone
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1314,27 +1322,29 @@ theorem wp_store_packed_failure (ϕ : Val → IProp GF) (s : Stuckness) (E : CoP
   iapply key $$ [HΦ Hn] Hf
   iframe
 
-@[rocq_alias iriswasm.wp_current_memory]
 theorem wp_current_memory (s : Stuckness) (E : CoPset) (k n : Nat) (f : Frame)
-    (Φ : Val → IProp GF) (hk : f.inst.memory[0]? = some k) :
-    iprop(▷ Φ (.immV [.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))]) ∗
-      ↪[frame] f ∗ k ↦[wmlength] n) ⊢
-    WP ([.basic .currentMemory] : Expr) @ s ; E
-      {{ w, (Φ w ∗ k ↦[wmlength] n) ∗ ↪[frame] f }} := by
+    (Φ : Val → IProp GF) (hk : f.inst.memory[x]? = some k) (hs : WellSized aw n) :
+    iprop(▷ Φ (.immV [aw.natValue (n / pageSize)]) ∗
+      ↪[frame] f ∗ k ↦[wmlength] (aw, n)) ⊢
+    WP ([.basic (.currentMemory x)] : Expr) @ s ; E
+      {{ w, (Φ w ∗ k ↦[wmlength] (aw, n)) ∗ ↪[frame] f }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f) (f' := f)
-    (Φ := fun w => iprop(Φ w ∗ k ↦[wmlength] n))
-    (R := iprop(▷ Φ (.immV [.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))]) ∗
-      k ↦[wmlength] n))
-    (es := [.basic .currentMemory]) (by solve_toVal) fun ws => by
+    (Φ := fun w => iprop(Φ w ∗ k ↦[wmlength] (aw, n)))
+    (R := iprop(▷ Φ (.immV [aw.natValue (n / pageSize)]) ∗ k ↦[wmlength] (aw, n)))
+    (es := [.basic (.currentMemory x)]) (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨HΦ, Hn⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
-      obtain ⟨m, hm, hlen⟩ := Option.map_eq_some_iff.1 hms
-      have hred : Reduce ws f [.basic .currentMemory] ws f
-          [.basic (.const (.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))))] := by
-        have := Reduce.currentMemory (s := ws) (f := f) k m (smemInd_of hk) hm rfl
-        rwa [memSize, hlen] at this
+      obtain ⟨m, hm, he⟩ := Option.map_eq_some_iff.1 hms
+      have hw : m.type.address = aw := congrArg Prod.fst he
+      have hlen : lengthMem m = n := congrArg (fun p => p.2.1) he
+      have hred : Reduce ws f [.basic (.currentMemory x)] ws f
+          [.basic (.const (aw.natValue (n / pageSize)))] := by
+        rw [← hw]
+        apply Reduce.currentMemory k m hk hm
+        · rw [hlen]; exact hs.pages_mul
+        · rw [hw]; exact hs.pages_fit
       isplitr
       · ipureintro; exact ⟨_, _, _, hred⟩
       iintro !> %ws2 %f2 %es2 %Hred
@@ -1347,9 +1357,10 @@ theorem wp_current_memory (s : Stuckness) (E : CoPset) (k n : Nat) (f : Frame)
   iapply key $$ [HΦ Hn] Hf
   iframe
 
-private theorem gmapOfMemory_snoc {mems : List Memory} {k : Nat} {d : List Byte} {o : Option Nat}
-    (hm : mems[k]? = some ⟨⟨d⟩, o⟩) (b : Byte) :
-    insert (gmapOfMemory mems) (k, d.length) b = gmapOfMemory (mems.set k ⟨⟨d ++ [b]⟩, o⟩) := by
+private theorem gmapOfMemory_snoc {mems : List Memory} {k : Nat} {d : List Byte} {o : MemoryType}
+    (hm : mems[k]? = some ⟨MemoryList.ofBytes d, o⟩) (b : Byte) :
+    insert (gmapOfMemory mems) (k, d.length) b =
+      gmapOfMemory (mems.set k ⟨MemoryList.ofBytes (d ++ [b]), o⟩) := by
   apply LawfulPartialMap.equiv_iff_eq.1
   rintro ⟨i, j⟩
   have hk := (List.getElem?_eq_some_iff.1 hm).1
@@ -1358,15 +1369,15 @@ private theorem gmapOfMemory_snoc {mems : List Memory} {k : Nat} {d : List Byte}
   by_cases hi : k = i
   · subst hi
     simp only [hm, Option.map_some, List.length_map, hk, ite_true, Prod.mk.injEq, true_and,
-      memoryToList, List.getElem?_append, List.getElem?_singleton]
+      memoryToList, MemoryList.data_ofBytes, List.getElem?_append, List.getElem?_singleton]
     grind
   · simp [hi]
 
 /-- Allocate the bytes `bs` at the end of the memory `k` (data `d`). -/
-private theorem heap_alloc_bytes (k : Nat) (o : Option Nat) (bs : Bytes) : ∀ (d : List Byte)
-    (mems : List Memory), mems[k]? = some ⟨⟨d⟩, o⟩ →
+private theorem heap_alloc_bytes (k : Nat) (o : MemoryType) (bs : Bytes) : ∀ (d : List Byte)
+    (mems : List Memory), mems[k]? = some ⟨MemoryList.ofBytes d, o⟩ →
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems) ==∗
-      genHeapInterp (G := WasmG.memHs) (gmapOfMemory (mems.set k ⟨⟨d ++ bs⟩, o⟩)) ∗
+      genHeapInterp (G := WasmG.memHs) (gmapOfMemory (mems.set k ⟨MemoryList.ofBytes (d ++ bs), o⟩)) ∗
         k ↦[wms][ d.length ] bs : IProp GF) := by
   induction bs with
   | nil =>
@@ -1384,12 +1395,13 @@ private theorem heap_alloc_bytes (k : Nat) (o : Option Nat) (bs : Bytes) : ∀ (
   | cons b bs ih =>
     intro d mems hm
     have hn := (List.getElem?_eq_some_iff.1 hm).1
-    have key := ih (d ++ [b]) (mems.set k ⟨⟨d ++ [b]⟩, o⟩) (by rw [List.getElem?_set_self hn])
+    have key := ih (d ++ [b]) (mems.set k ⟨MemoryList.ofBytes (d ++ [b]), o⟩)
+      (by rw [List.getElem?_set_self hn])
     rw [List.set_set, List.append_assoc, List.singleton_append, List.length_append,
       List.length_singleton] at key
     iintro Hσ
     imod @genHeap_alloc _ _ _ _ _ WasmG.memHs _ _ (k, d.length) b
-      (by rw [get?_gmapOfMemory hm]; simp) $$ Hσ with ⟨Hσ, Hb, -⟩
+      (by rw [get?_gmapOfMemory hm, MemoryList.data_ofBytes]; simp) $$ Hσ with ⟨Hσ, Hb, -⟩
     rw [gmapOfMemory_snoc hm b]
     imod key $$ Hσ with ⟨Hσ, Hbs⟩
     imodintro
@@ -1406,78 +1418,70 @@ theorem gen_heap_alloc_grow (m m' : Memory) (mems mems' : List Memory) (k n : Na
     ⊢ (genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems) ==∗
       genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems') ∗
         k ↦[wms][ lengthMem m ] List.replicate (n * pageSize) (0 : Byte) : IProp GF) := by
-  obtain ⟨⟨d⟩, o⟩ := m
-  have hd := mem_grow_data _ _ _ hg
-  have ho := mem_grow_max _ _ _ hg
-  obtain ⟨⟨d'⟩, o'⟩ := m'
-  simp only at hd ho
-  subst hd ho hu
-  rw [← update_list_at_is_set_nth _ (List.getElem?_eq_some_iff.1 hm).1]
-  exact heap_alloc_bytes k o _ d mems hm
+  subst hu
+  rw [← update_list_at_is_set_nth _ (List.getElem?_eq_some_iff.1 hm).1, lengthMem_eq_data_length]
+  have he : gmapOfMemory (mems.set k m') = gmapOfMemory
+      (mems.set k ⟨MemoryList.ofBytes (m.data.data ++ List.replicate (n * pageSize) 0), m.type⟩) := by
+    simp only [gmapOfMemory, List.map_set, memoryToList, mem_grow_data m n m' hg,
+      MemoryList.data_ofBytes]
+  rw [he]
+  exact heap_alloc_bytes k m.type _ m.data.data mems (by simpa only [MemoryList.ofBytes_data] using hm)
 
-private theorem grow_memory_inv {ws ws2 : StoreRecord} {f f2 : Frame} {c : I32}
-    {es2 : List AdministrativeInstruction}
-    (h : Reduce ws f [.basic (.const (.int32 c)), .basic .growMemory] ws2 f2 es2) :
-    f2 = f ∧ ((∃ i m mem', smemInd ws f.inst = some i ∧ ws.mems[i]? = some m ∧
-      memGrow m (Wasm.Int.nOfUint c) = some mem' ∧ ws2 = updSMem ws (updateListAt ws.mems i mem') ∧
-      es2 = [.basic (.const (.int32 (Wasm.Int.intOfZ (memSize m : _root_.Int))))]) ∨
-      (ws2 = ws ∧ es2 = [.basic (.const (.int32 int32MinusOne))])) := by
-  open Helpers.ReduceDetPrelude in only_one_reduction h
-
-@[rocq_alias iriswasm.wp_grow_memory]
 theorem wp_grow_memory (s : Stuckness) (E : CoPset) (k : Nat) (f : Frame) (n : Nat)
-    (Φ Ψ : Val → IProp GF) (c : I32) (hk : f.inst.memory[0]? = some k) :
-    iprop(↪[frame] f ∗ k ↦[wmlength] n ∗
-      ▷ Φ (.immV [.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))]) ∗
-      ▷ Ψ (.immV [.int32 int32MinusOne])) ⊢
-    WP ([.basic (.const (.int32 c)), .basic .growMemory] : Expr) @ s ; E
-      {{ w, (((Φ w ∗ k ↦[wms][ n ] List.replicate (Wasm.Int.nOfUint c * pageSize) (0 : Byte) ∗
-          k ↦[wmlength] (n + Wasm.Int.nOfUint c * pageSize)) ∗
-          ⌜MemInBound (n / pageSize + Wasm.Int.nOfUint c)⌝) ∨
-        (Ψ w ∗ k ↦[wmlength] n)) ∗ ↪[frame] f }} := by
+    (Φ Ψ : Val → IProp GF) (c : AddressOperand) (hk : f.inst.memory[x]? = some k) :
+    iprop(↪[frame] f ∗ k ↦[wmlength] (aw, n) ∗
+      ▷ Φ (.immV [c.result (n / pageSize)]) ∗
+      ▷ Ψ (.immV [c.failure])) ⊢
+    WP ([.basic (.const c.value), .basic (.growMemory x)] : Expr) @ s ; E
+      {{ w, (((Φ w ∗ k ↦[wms][ n ] List.replicate (c.unsigned * pageSize) (0 : Byte) ∗
+          k ↦[wmlength] (aw, n + c.unsigned * pageSize)) ∗
+          ⌜MemInBound aw (n / pageSize + c.unsigned)⌝) ∨
+        (Ψ w ∗ k ↦[wmlength] (aw, n))) ∗ ↪[frame] f }} := by
   have key := wp_wasm_step (s := s) (E := E) (f := f) (f' := f)
     (Φ := fun w => iprop(((Φ w ∗
-        k ↦[wms][ n ] List.replicate (Wasm.Int.nOfUint c * pageSize) (0 : Byte) ∗
-        k ↦[wmlength] (n + Wasm.Int.nOfUint c * pageSize)) ∗
-        ⌜MemInBound (n / pageSize + Wasm.Int.nOfUint c)⌝) ∨ (Ψ w ∗ k ↦[wmlength] n)))
-    (R := iprop(k ↦[wmlength] n ∗
-      ▷ Φ (.immV [.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))]) ∗
-      ▷ Ψ (.immV [.int32 int32MinusOne])))
-    (es := [.basic (.const (.int32 c)), .basic .growMemory]) (by solve_toVal) fun ws => by
+        k ↦[wms][ n ] List.replicate (c.unsigned * pageSize) (0 : Byte) ∗
+        k ↦[wmlength] (aw, n + c.unsigned * pageSize)) ∗
+        ⌜MemInBound aw (n / pageSize + c.unsigned)⌝) ∨ (Ψ w ∗ k ↦[wmlength] (aw, n))))
+    (R := iprop(k ↦[wmlength] (aw, n) ∗
+      ▷ Φ (.immV [c.result (n / pageSize)]) ∗
+      ▷ Ψ (.immV [c.failure])))
+    (es := [.basic (.const c.value), .basic (.growMemory x)]) (by solve_toVal) fun ws => by
       unfold genHeapWasmStore
       iintro ⟨⟨Hn, HΦ, HΨ⟩, Hfn, Htb, Hm, Hgl, Hms, Hts, Hml, Htl⟩
       ihave %hms := heap_lookup $$ [$Hms] [$Hn]
       rw [gmap_of_list_lookup, List.getElem?_map] at hms
-      obtain ⟨m, hm, hlen⟩ := Option.map_eq_some_iff.1 hms
+      obtain ⟨m, hm, he⟩ := Option.map_eq_some_iff.1 hms
+      have hw : m.type.address = aw := congrArg Prod.fst he
+      have hlen : lengthMem m = n := congrArg (fun p => p.2.1) he
       have hkl := (List.getElem?_eq_some_iff.1 hm).1
       isplitr
-      · ipureintro; exact ⟨_, _, _, .growMemoryFailure k m _ (smemInd_of hk) hm rfl⟩
+      · ipureintro; exact ⟨_, _, _, .growMemoryFailure (c := c)⟩
       iintro !> %ws2 %f2 %es2 %Hred
-      obtain ⟨rfl, ⟨i, m', mem', hi, hm', hg, rfl, rfl⟩ | ⟨rfl, rfl⟩⟩ := grow_memory_inv Hred
-      · rw [smemInd_of hk, Option.some.injEq] at hi
+      obtain ⟨rfl, ⟨i, m', mem', hi, hm', -, hg, rfl, rfl⟩ | ⟨rfl, rfl⟩⟩ :=
+        grow_memory_inv (c := c) Hred
+      · rw [hk, Option.some.injEq] at hi
         subst hi
         rw [hm, Option.some.injEq] at hm'
         subst hm'
-        have hb : memSize m + Wasm.Int.nOfUint c ≤ pageLimit := by
-          unfold memGrow at hg; dsimp only at hg; split at hg
-          · assumption
-          · cases hg
+        have hb : memSize m + c.unsigned ≤ aw.pageLimit := hw ▸ (memGrow_spec hg).2.2.1
         imod @genHeap_update _ _ _ _ _ WasmG.memsizeHs _ _ _ _
-          (n + Wasm.Int.nOfUint c * pageSize) $$ [$Hms $Hn] with ⟨Hms, Hn⟩
-        imod gen_heap_alloc_grow m mem' ws.mems _ k (Wasm.Int.nOfUint c) hm hg rfl $$ Hm
+          (memLengthToken (aw, n + c.unsigned * pageSize)) $$ [$Hms $Hn] with ⟨Hms, Hn⟩
+        imod gen_heap_alloc_grow m mem' ws.mems _ k c.unsigned hm hg rfl $$ Hm
           with ⟨Hm, Hwms⟩
-        have e1 : (updateListAt ws.mems k mem').map lengthMem =
-            (ws.mems.map lengthMem).set k (n + Wasm.Int.nOfUint c * pageSize) := by
-          rw [← update_list_at_is_set_nth _ hkl, List.map_set, mem_grow_length _ _ _ hg, hlen]
+        have e1 : (updateListAt ws.mems k mem').map memLengthMeta =
+            (ws.mems.map memLengthMeta).set k (memLengthToken (aw, n + c.unsigned * pageSize)) := by
+          rw [← update_list_at_is_set_nth _ hkl, List.map_set]
+          simp only [memLengthMeta, memLengthToken, (memGrow_spec hg).2.1, hw,
+            mem_grow_length _ _ _ hg, memSize, hlen, Nat.add_mul_div_right _ _ (by decide : 0 < pageSize)]
         simp only [updSMem]
-        rw [← gmap_of_list_insert (ws.mems.map lengthMem) _ k (by simpa using hkl), ← e1,
-          map_updateListAt (·.maxOpt) hm (mem_grow_max _ _ _ hg).symm, hlen]
+        rw [← gmap_of_list_insert (ws.mems.map memLengthMeta) _ k (by simpa using hkl), ← e1,
+          map_updateListAt (·.type.limits.max) hm (mem_grow_max _ _ _ hg).symm, hlen]
         imodintro
         isplitr
         · ipureintro; trivial
         isplitl [Hfn Htb Hm Hgl Hms Hts Hml Htl]
         · iframe
-        iexists (Val.immV [.int32 (Wasm.Int.intOfZ ((n / pageSize : Nat) : _root_.Int))])
+        iexists (Val.immV [c.result (n / pageSize)])
         isplitr
         · ipureintro; simp only [memSize, hlen]; solve_toVal
         ileft
@@ -1489,7 +1493,7 @@ theorem wp_grow_memory (s : Stuckness) (E : CoPset) (k : Nat) (f : Frame) (n : N
         · ipureintro; trivial
         isplitl [Hfn Htb Hm Hgl Hms Hts Hml Htl]
         · iframe
-        iexists (Val.immV [.int32 int32MinusOne])
+        iexists (Val.immV [c.failure])
         isplitr
         · ipureintro; solve_toVal
         iright

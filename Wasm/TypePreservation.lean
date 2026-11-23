@@ -153,6 +153,7 @@ theorem Cvtop_typing {C : TContext} {t1 t2 : ValueType} {op : Cvtop} {sx : Optio
   induction h generalizing t1s t2s
   case convert => cases hes; cases htf; exact ⟨[], rfl, rfl⟩
   case reinterpret => cases hes; cases htf; exact ⟨[], rfl, rfl⟩
+  case truncSat => cases hes; cases htf; exact ⟨[], rfl, rfl⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
@@ -207,23 +208,39 @@ theorem Select_typing {C : TContext} {t1s t2s : List ValueType}
     cases htf; obtain ⟨ts', t, rfl, rfl⟩ := ih hes rfl; exact ⟨ts ++ ts', t, by simp, by simp⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.If_typing]
-theorem If_typing {C : TContext} {t1s t2s : List ValueType} {e1s e2s : List BasicInstruction}
-    {ts ts' : List ValueType} (h : BeTyping C [.if_ (.tf t1s t2s) e1s e2s] (.tf ts ts')) :
-    ∃ ts0, ts = ts0 ++ t1s ++ [.i32] ∧ ts' = ts0 ++ t2s ∧
-      BeTyping (updLabel C ([t2s] ++ C.label)) e1s (.tf t1s t2s) ∧
-      BeTyping (updLabel C ([t2s] ++ C.label)) e2s (.tf t1s t2s) := by
-  generalize hes : [BasicInstruction.if_ (.tf t1s t2s) e1s e2s] = es at h
-  generalize htf : FunctionType.tf ts ts' = tf at h
-  induction h generalizing ts ts'
-  case ifWasm h1 h2 _ _ => cases hes; cases htf; exact ⟨[], rfl, rfl, h1, h2⟩
+theorem Vbitselect_typing {C : TContext} {t1s t2s : List ValueType}
+    (h : BeTyping C [.vbitselect] (.tf t1s t2s)) :
+    ∃ ts, t1s = ts ++ [.v128, .v128, .v128] ∧ t2s = ts ++ [.v128] := by
+  generalize hes : [BasicInstruction.vbitselect] = es at h
+  generalize htf : FunctionType.tf t1s t2s = tf at h
+  induction h generalizing t1s t2s
+  case vbitselect => cases htf; exact ⟨[], rfl, rfl⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨ts0, rfl, rfl, H3, H4⟩ := ih hes rfl
-    exact ⟨ts ++ ts0, by simp, by simp, H3, H4⟩
+    cases htf; obtain ⟨ts', rfl, rfl⟩ := ih hes rfl; exact ⟨ts ++ ts', by simp, by simp⟩
+  all_goals cases hes
+
+#rocq_ignore iriswasm.If_typing "Core block type inversion recovers a resolved signature"
+theorem If_typing {C : TContext} {bt : BlockType} {e1s e2s : List BasicInstruction}
+    {ts ts' : List ValueType} (h : BeTyping C [.if_ bt e1s e2s] (.tf ts ts')) :
+    ∃ ts0 t1s t2s, expandBlockType C.typesT bt = some (.tf t1s t2s) ∧
+      ts = ts0 ++ t1s ++ [.i32] ∧ ts' = ts0 ++ t2s ∧
+      BeTyping (updLabel C ([t2s] ++ C.label)) e1s (.tf t1s t2s) ∧
+      BeTyping (updLabel C ([t2s] ++ C.label)) e2s (.tf t1s t2s) := by
+  generalize hes : [BasicInstruction.if_ bt e1s e2s] = es at h
+  generalize htf : FunctionType.tf ts ts' = tf at h
+  induction h generalizing ts ts'
+  case ifWasm hs h1 h2 _ _ => cases hes; cases htf; exact ⟨[], _, _, hs, rfl, rfl, h1, h2⟩
+  case composition h1 _ _ ih =>
+    obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
+    obtain rfl := empty_typing h1
+    exact ih rfl htf
+  case weakening ts _ _ _ ih =>
+    cases htf; obtain ⟨ts0, _, _, hs, rfl, rfl, H3, H4⟩ := ih hes rfl
+    exact ⟨ts ++ ts0, _, _, hs, by simp, by simp, H3, H4⟩
   all_goals cases hes
 
 @[rocq_alias iriswasm.Br_if_typing]
@@ -310,7 +327,8 @@ private theorem cvt_typeof {t : ValueType} {sx : Option Sx} {v v' : Value}
 @[rocq_alias iriswasm.app_binop_type_preserve]
 theorem app_binop_type_preserve {op : Binop} {v1 v2 v : Value} (h : appBinop op v1 v2 = some v) :
     typeof v = typeof v1 := by
-  cases op <;> cases v1 <;> cases v2 <;> simp [appBinop] at h <;> obtain ⟨_, _, rfl⟩ := h <;> rfl
+  unfold appBinop at h
+  split at h <;> simp at h <;> (first | subst v | obtain ⟨_, _, rfl⟩ := h) <;> rfl
 
 @[rocq_alias iriswasm.t_Unop_preserve]
 theorem t_Unop_preserve {C : TContext} {v : Value} {t : ValueType} {op : Unop}
@@ -341,21 +359,9 @@ theorem t_Binop_preserve_success {C : TContext} {v1 v2 : Value} {t : ValueType} 
   have hv := app_binop_type_preserve ‹appBinop op v1 v2 = some _›
   exact .weakening (bet_const_of (by rw [h5, hv]))
 
-@[rocq_alias iriswasm.t_Testop_i32_preserve]
-theorem t_Testop_i32_preserve {C : TContext} {c : I32} {testop : Testop} {tf : FunctionType}
-    (h : BeTyping C [.const (.int32 c), .testop .i32 testop] tf) :
-    BeTyping C [.const (.int32 (wasmBool (appTestopI testop c)))] tf := by
-  obtain ⟨t1s, t2s⟩ := tf
-  obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
-  obtain ⟨ts', h1, rfl⟩ := Testop_typing H4
-  rw [BI_const_typing H3] at h1
-  obtain ⟨rfl, -⟩ := concat_cancel_last h1
-  exact .weakening (bet_const_of rfl)
-
-@[rocq_alias iriswasm.t_Testop_i64_preserve]
-theorem t_Testop_i64_preserve {C : TContext} {c : I64} {testop : Testop} {tf : FunctionType}
-    (h : BeTyping C [.const (.int64 c), .testop .i64 testop] tf) :
-    BeTyping C [.const (.int32 (wasmBool (appTestopI testop c)))] tf := by
+private theorem testop_const_preserve {C : TContext} {v : Value} {t : ValueType} {op : Testop}
+    {r : I32} {tf : FunctionType} (h : BeTyping C [.const v, .testop t op] tf) :
+    BeTyping C [.const (.int32 r)] tf := by
   obtain ⟨t1s, t2s⟩ := tf
   obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
   obtain ⟨ts', h1, rfl⟩ := Testop_typing H4
@@ -386,6 +392,17 @@ theorem be_typing_const_deserialise (C : TContext) (v : Value) (t : ValueType) :
     BeTyping C [.const (wasmDeserialise (bits v) t)] (.tf [] [t]) := by
   exact bet_const_of (by rw [typeof_deserialise]; rfl)
 
+private theorem cvtop_const_preserve {C : TContext} {v w : Value} {src dst : ValueType}
+    {op : Cvtop} {sx : Option Sx} {tf : FunctionType}
+    (h : BeTyping C [.const v, .cvtop dst op src sx] tf) (hw : typeof w = dst) :
+    BeTyping C [.const w] tf := by
+  obtain ⟨t1s, t2s⟩ := tf
+  obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
+  obtain ⟨ts', h1, rfl⟩ := Cvtop_typing H4
+  rw [BI_const_typing H3] at h1
+  obtain ⟨rfl, -⟩ := concat_cancel_last h1
+  exact .weakening (bet_const_of (by rw [hw]))
+
 @[rocq_alias iriswasm.t_Convert_preserve]
 theorem t_Convert_preserve {C : TContext} {v : Value} {t1 t2 : ValueType} {sx : Option Sx}
     {be : BasicInstruction} {tf : FunctionType}
@@ -394,12 +411,7 @@ theorem t_Convert_preserve {C : TContext} {v : Value} {t1 t2 : ValueType} {sx : 
     BeTyping C [be] tf := by
   rs_invert hr with hA hB
   obtain ⟨rfl, rfl, rfl, rfl⟩ := hA; subst hB
-  obtain ⟨t1s, t2s⟩ := tf
-  obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
-  obtain ⟨ts', h1, rfl⟩ := Cvtop_typing H4
-  rw [BI_const_typing H3] at h1
-  obtain ⟨rfl, -⟩ := concat_cancel_last h1
-  exact .weakening (bet_const_of (by rw [cvt_typeof ‹cvt _ _ _ = _›]))
+  exact cvtop_const_preserve h (cvt_typeof (by assumption))
 
 @[rocq_alias iriswasm.t_Reinterpret_preserve]
 theorem t_Reinterpret_preserve {C : TContext} {v : Value} {t1 t2 : ValueType}
@@ -409,12 +421,7 @@ theorem t_Reinterpret_preserve {C : TContext} {v : Value} {t1 t2 : ValueType}
     BeTyping C [be] tf := by
   rs_invert hr with hA hB
   obtain ⟨rfl, rfl, rfl⟩ := hA; subst hB
-  obtain ⟨t1s, t2s⟩ := tf
-  obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
-  obtain ⟨ts', h1, rfl⟩ := Cvtop_typing H4
-  rw [BI_const_typing H3] at h1
-  obtain ⟨rfl, -⟩ := concat_cancel_last h1
-  exact .weakening (bet_const_of (by rw [typeof_deserialise]))
+  exact cvtop_const_preserve h (typeof_deserialise ..)
 
 @[rocq_alias iriswasm.t_Drop_preserve]
 theorem t_Drop_preserve {C : TContext} {v : Value} {tf : FunctionType}
@@ -446,23 +453,33 @@ theorem t_Select_preserve {C : TContext} {v1 v2 : Value} {n : I32} {tf : Functio
   · obtain ⟨rfl, rfl, rfl⟩ := hA; subst hB
     exact .weakening (bet_const_of (by rw [h3]))
 
+private theorem vbitselect_preserve {C : TContext} {x y mask : BitVec 128} {tf : FunctionType}
+    (h : BeTyping C [.const (.vec128 x), .const (.vec128 y), .const (.vec128 mask),
+      .vbitselect] tf) :
+    BeTyping C [.const (.vec128 (Wasm.vbitselect x y mask))] tf := by
+  obtain ⟨t1s, t2s⟩ := tf
+  obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_, _, _]) h
+  obtain ⟨ts', h1, rfl⟩ := Vbitselect_typing H4
+  rw [BI_const3_typing H3] at h1
+  obtain ⟨rfl, -⟩ := concat_cancel_last_n h1 rfl
+  exact .weakening (bet_const_of rfl)
+
 @[rocq_alias iriswasm.t_If_be_preserve]
-theorem t_If_be_preserve {C : TContext} {c : I32} {tf0 : FunctionType}
+theorem t_If_be_preserve {C : TContext} {c : I32} {bt : BlockType}
     {es1 es2 : List BasicInstruction} {tf : FunctionType} {be : BasicInstruction}
-    (h : BeTyping C [.const (.int32 c), .if_ tf0 es1 es2] tf)
-    (hr : ReduceSimple (toEList [.const (.int32 c), .if_ tf0 es1 es2]) [basic be]) :
+    (h : BeTyping C [.const (.int32 c), .if_ bt es1 es2] tf)
+    (hr : ReduceSimple (toEList [.const (.int32 c), .if_ bt es1 es2]) [basic be]) :
     BeTyping C [be] tf := by
   obtain ⟨t1s, t2s⟩ := tf
-  obtain ⟨tn, tm⟩ := tf0
   obtain ⟨ts, t1s', t2s', t3s, rfl, rfl, H3, H4⟩ := composition_typing_single (es1 := [_]) h
-  obtain ⟨ts0, h1, rfl, B1, B2⟩ := If_typing H4
+  obtain ⟨ts0, tn, tm, hs, h1, rfl, B1, B2⟩ := If_typing H4
   rw [BI_const_typing H3] at h1
   obtain ⟨rfl, -⟩ := concat_cancel_last h1
   rs_invert hr with hA hB
   · obtain ⟨rfl, rfl, rfl, rfl⟩ := hA; subst hB
-    exact .weakening (.weakening (.block B2))
+    exact .weakening (.weakening (.block hs B2))
   · obtain ⟨rfl, rfl, rfl, rfl⟩ := hA; subst hB
-    exact .weakening (.weakening (.block B1))
+    exact .weakening (.weakening (.block hs B1))
 
 @[rocq_alias iriswasm.t_Br_if_true_preserve]
 theorem t_Br_if_true_preserve {C : TContext} {c : I32} {i : Nat} {tf : FunctionType}
@@ -551,13 +568,14 @@ theorem t_be_simple_preservation {bes bes' : List BasicInstruction}
     first
       | exact t_Unop_preserve hty hr
       | exact t_Binop_preserve_success hty hr
-      | exact t_Testop_i32_preserve hty
-      | exact t_Testop_i64_preserve hty
+      | exact testop_const_preserve hty
       | exact t_Relop_preserve hty hr
       | exact t_Convert_preserve hty hr
       | exact t_Reinterpret_preserve hty hr
+      | exact cvtop_const_preserve hty (truncSat_typeof (by assumption))
       | exact t_Drop_preserve hty
       | exact t_Select_preserve hty hr
+      | exact vbitselect_preserve hty
       | exact t_If_be_preserve hty hr
       | exact t_Br_if_true_preserve hty hr
       | exact t_Br_if_false_preserve hty hr
@@ -665,38 +683,42 @@ theorem t_const_ignores_context {s : StoreRecord} (s' : StoreRecord) {C : TConte
   obtain rfl := Const_list_typing (et_to_bet hb h)
   exact ety_a' s' hb (bet_weakening_empty_1 t1s (Const_list_typing_empty C' vs))
 
-@[rocq_alias iriswasm.Block_typing]
-theorem Block_typing {C : TContext} {t1s t2s : List ValueType} {es : List BasicInstruction}
-    {tn tm : List ValueType} (h : BeTyping C [.block (.tf t1s t2s) es] (.tf tn tm)) :
-    ∃ ts, tn = ts ++ t1s ∧ tm = ts ++ t2s ∧
+#rocq_ignore iriswasm.Block_typing "Core block type inversion recovers a resolved signature"
+theorem Block_typing {C : TContext} {bt : BlockType} {es : List BasicInstruction}
+    {tn tm : List ValueType} (h : BeTyping C [.block bt es] (.tf tn tm)) :
+    ∃ ts t1s t2s, expandBlockType C.typesT bt = some (.tf t1s t2s) ∧
+      tn = ts ++ t1s ∧ tm = ts ++ t2s ∧
       BeTyping (updLabel C ([t2s] ++ C.label)) es (.tf t1s t2s) := by
-  generalize hes : [BasicInstruction.block (.tf t1s t2s) es] = es at h
+  generalize hes : [BasicInstruction.block bt es] = es at h
   generalize htf : FunctionType.tf tn tm = tf at h
   induction h generalizing tn tm
-  case block h1 => cases hes; cases htf; exact ⟨[], rfl, rfl, by assumption⟩
+  case block hs h1 _ => cases hes; cases htf; exact ⟨[], _, _, hs, rfl, rfl, h1⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨ts0, rfl, rfl, H⟩ := ih hes rfl; exact ⟨ts ++ ts0, by simp, by simp, H⟩
+    cases htf; obtain ⟨ts0, _, _, hs, rfl, rfl, H⟩ := ih hes rfl
+    exact ⟨ts ++ ts0, _, _, hs, by simp, by simp, H⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.Loop_typing]
-theorem Loop_typing {C : TContext} {t1s t2s : List ValueType} {es : List BasicInstruction}
-    {tn tm : List ValueType} (h : BeTyping C [.loop (.tf t1s t2s) es] (.tf tn tm)) :
-    ∃ ts, tn = ts ++ t1s ∧ tm = ts ++ t2s ∧
+#rocq_ignore iriswasm.Loop_typing "Core block type inversion recovers a resolved signature"
+theorem Loop_typing {C : TContext} {bt : BlockType} {es : List BasicInstruction}
+    {tn tm : List ValueType} (h : BeTyping C [.loop bt es] (.tf tn tm)) :
+    ∃ ts t1s t2s, expandBlockType C.typesT bt = some (.tf t1s t2s) ∧
+      tn = ts ++ t1s ∧ tm = ts ++ t2s ∧
       BeTyping (updLabel C ([t1s] ++ C.label)) es (.tf t1s t2s) := by
-  generalize hes : [BasicInstruction.loop (.tf t1s t2s) es] = es at h
+  generalize hes : [BasicInstruction.loop bt es] = es at h
   generalize htf : FunctionType.tf tn tm = tf at h
   induction h generalizing tn tm
-  case loop h1 => cases hes; cases htf; exact ⟨[], rfl, rfl, by assumption⟩
+  case loop hs h1 _ => cases hes; cases htf; exact ⟨[], _, _, hs, rfl, rfl, h1⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨ts0, rfl, rfl, H⟩ := ih hes rfl; exact ⟨ts ++ ts0, by simp, by simp, H⟩
+    cases htf; obtain ⟨ts0, _, _, hs, rfl, rfl, H⟩ := ih hes rfl
+    exact ⟨ts ++ ts0, _, _, hs, by simp, by simp, H⟩
   all_goals cases hes
 
 @[rocq_alias iriswasm.Break_typing]
@@ -848,26 +870,6 @@ theorem t_simple_preservation {s : StoreRecord} {i : Instance}
   case teeLocal hv =>
     obtain ⟨c, rfl⟩ := isConst_iff'.1 hv
     exact simple_basic h hr' (by simp [EsIsBasic, EIsBasic]) (by simp [EsIsBasic, EIsBasic])
-  case block hc hn ht1 hm =>
-    obtain ⟨a, b⟩ := tf
-    obtain ⟨vs', rfl⟩ := const_es_exists hc
-    obtain ⟨c, H1, H2⟩ := e_comp_weak h
-    have hc' := Const_list_typing (et_to_bet (const_list_is_basic hc) H1)
-    obtain ⟨ts, rfl, rfl, H3⟩ := Block_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) H2)
-    obtain ⟨rfl, hvs⟩ := concat_cancel_last_n hc' (by simp [ht1, ← hn, v_to_e_size])
-    exact et_weakening_empty_1 _ (.label (ety_a' s (by simp [EsIsBasic]) (bet_weakening_empty_both _ .empty))
-      (et_composition' (ety_a' s (const_list_is_basic hc)
-        (by rw [hvs]; exact Const_list_typing_empty _ vs')) (.a H3)) hm)
-  case loop hc hn ht1 hm =>
-    obtain ⟨a, b⟩ := tf
-    obtain ⟨vs', rfl⟩ := const_es_exists hc
-    obtain ⟨c, H1, H2⟩ := e_comp_weak h
-    have hc' := Const_list_typing (et_to_bet (const_list_is_basic hc) H1)
-    obtain ⟨ts, rfl, rfl, H3⟩ := Loop_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) H2)
-    obtain ⟨rfl, hvs⟩ := concat_cancel_last_n hc' (by simp [ht1, ← hn, v_to_e_size])
-    exact et_weakening_empty_1 _ (.label (ety_a' s (by simp [EsIsBasic, EIsBasic]) (.loop H3))
-      (et_composition' (ety_a' s (const_list_is_basic hc)
-        (by rw [hvs]; exact Const_list_typing_empty _ vs')) (.a H3)) ht1)
   case labelConst hc =>
     obtain ⟨a, b⟩ := tf
     obtain ⟨ts, ts2', rfl, -, H, -⟩ := Label_typing h
@@ -923,19 +925,6 @@ theorem Call_indirect_typing {i : Nat} {C : TContext} {t1s t2s : List ValueType}
   case weakening ts _ _ _ ih =>
     cases htf; obtain ⟨a, b, ts0, H0, H1, H2, rfl, rfl⟩ := ih hes rfl; exact ⟨a, b, ts ++ ts0, H0, H1, H2, by simp, by simp⟩
   all_goals cases hes
-
-/-- Unfolds `instTyping` into its conjuncts. -/
-private theorem instTyping_spec {s : StoreRecord} {i : Instance} {C : TContext}
-    (h : instTyping s i C = true) :
-    i.types = C.typesT ∧ List.all2 (functionsAgree s.funcs) i.funcs C.funcT = true ∧
-      List.all2 (globalsAgree s.globals) i.globs C.global = true ∧
-      List.all2 (tabiAgree s.tables) i.tab C.table = true ∧
-      List.all2 (memiAgree s.mems) i.memory C.memory = true ∧
-      C.local_ = [] ∧ C.label = [] ∧ C.return_ = none := by
-  obtain ⟨ts, fs, tbs, ms, gs⟩ := i
-  obtain ⟨ts', tfs, tgs, tabsT, memsT, loc, lab, ret⟩ := C
-  cases loc <;> cases lab <;> cases ret <;>
-    simp_all [instTyping]
 
 @[rocq_alias iriswasm.globs_agree_function]
 theorem globs_agree_function (s : StoreRecord) :
@@ -1063,70 +1052,78 @@ theorem Set_global_typing {C : TContext} {i : Nat} {t1s t2s : List ValueType}
     cases htf; obtain ⟨g, t, H1, H2, H3, rfl, H5⟩ := ih hes rfl; exact ⟨g, t, H1, H2, H3, by simp, H5⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.Load_typing]
-theorem Load_typing {C : TContext} {t : ValueType} {a : AlignmentExponent} {off : StaticOffset}
+#rocq_ignore iriswasm.Load_typing "Core load typing inverts the selected memory and offset bounds"
+theorem Load_typing {C : TContext} {t : ValueType} {ma : MemArg}
     {tpSx : Option (PackedType × Sx)} {t1s t2s : List ValueType}
-    (h : BeTyping C [.load t tpSx a off] (.tf t1s t2s)) :
-    ∃ ts, t1s = ts ++ [.i32] ∧ t2s = ts ++ [t] ∧ C.memory ≠ [] ∧
-      loadStoreTBounds a (optionProjl tpSx) t = true := by
-  generalize hes : [BasicInstruction.load t tpSx a off] = es at h
+    (h : BeTyping C [.load t tpSx ma] (.tf t1s t2s)) :
+    ∃ (mt : MemoryType) (ts : List ValueType), t1s = ts ++ [mt.address.valueType] ∧ t2s = ts ++ [t] ∧
+      C.memory[ma.memory]? = some mt ∧ loadStoreTBounds ma.align (optionProjl tpSx) t = true ∧
+      ma.offset < 2 ^ mt.address.width := by
+  generalize hes : [BasicInstruction.load t tpSx ma] = es at h
   generalize htf : FunctionType.tf t1s t2s = tf at h
   induction h generalizing t1s t2s
-  case load h1 h2 => cases hes; cases htf; exact ⟨[], rfl, rfl, h1, h2⟩
+  case load hm hb ho => cases hes; cases htf; exact ⟨_, [], rfl, rfl, hm, hb, ho⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨ts0, rfl, rfl, H3, H4⟩ := ih hes rfl; exact ⟨ts ++ ts0, by simp, by simp, H3, H4⟩
+    cases htf
+    obtain ⟨mt, ts0, rfl, rfl, H⟩ := ih hes rfl
+    exact ⟨mt, ts ++ ts0, by simp, by simp, H⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.Store_typing]
-theorem Store_typing {C : TContext} {t : ValueType} {a : AlignmentExponent} {off : StaticOffset}
+#rocq_ignore iriswasm.Store_typing "Core store typing inverts the selected memory and offset bounds"
+theorem Store_typing {C : TContext} {t : ValueType} {ma : MemArg}
     {tp : Option PackedType} {t1s t2s : List ValueType}
-    (h : BeTyping C [.store t tp a off] (.tf t1s t2s)) :
-    t1s = t2s ++ [.i32, t] ∧ C.memory ≠ [] ∧ loadStoreTBounds a tp t = true := by
-  generalize hes : [BasicInstruction.store t tp a off] = es at h
+    (h : BeTyping C [.store t tp ma] (.tf t1s t2s)) :
+    ∃ mt : MemoryType, t1s = t2s ++ [mt.address.valueType, t] ∧
+      C.memory[ma.memory]? = some mt ∧ loadStoreTBounds ma.align tp t = true ∧
+      ma.offset < 2 ^ mt.address.width := by
+  generalize hes : [BasicInstruction.store t tp ma] = es at h
   generalize htf : FunctionType.tf t1s t2s = tf at h
   induction h generalizing t1s t2s
-  case store h1 h2 => cases hes; cases htf; exact ⟨rfl, h1, h2⟩
+  case store hm hb ho => cases hes; cases htf; exact ⟨_, rfl, hm, hb, ho⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨rfl, H2, H3⟩ := ih hes rfl; exact ⟨by simp, H2, H3⟩
+    cases htf; obtain ⟨mt, rfl, H⟩ := ih hes rfl; exact ⟨mt, by simp, H⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.Current_memory_typing]
-theorem Current_memory_typing {C : TContext} {t1s t2s : List ValueType}
-    (h : BeTyping C [.currentMemory] (.tf t1s t2s)) : C.memory ≠ [] ∧ t2s = t1s ++ [.i32] := by
-  generalize hes : [BasicInstruction.currentMemory] = es at h
+#rocq_ignore iriswasm.Current_memory_typing "Core memory.size types an explicit memory index"
+theorem Current_memory_typing {C : TContext} {x : Nat} {t1s t2s : List ValueType}
+    (h : BeTyping C [.currentMemory x] (.tf t1s t2s)) :
+    ∃ mt : MemoryType, C.memory[x]? = some mt ∧ t2s = t1s ++ [mt.address.valueType] := by
+  generalize hes : [BasicInstruction.currentMemory x] = es at h
   generalize htf : FunctionType.tf t1s t2s = tf at h
   induction h generalizing t1s t2s
-  case currentMemory h1 => cases hes; cases htf; exact ⟨h1, rfl⟩
+  case currentMemory h1 => cases hes; cases htf; exact ⟨_, h1, rfl⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨H1, rfl⟩ := ih hes rfl; exact ⟨H1, by simp⟩
+    cases htf; obtain ⟨mt, H1, rfl⟩ := ih hes rfl; exact ⟨mt, H1, by simp⟩
   all_goals cases hes
 
-@[rocq_alias iriswasm.Grow_memory_typing]
-theorem Grow_memory_typing {C : TContext} {t1s t2s : List ValueType}
-    (h : BeTyping C [.growMemory] (.tf t1s t2s)) :
-    ∃ ts, C.memory ≠ [] ∧ t2s = t1s ∧ t1s = ts ++ [.i32] := by
-  generalize hes : [BasicInstruction.growMemory] = es at h
+#rocq_ignore iriswasm.Grow_memory_typing "Core memory.grow types an explicit memory index"
+theorem Grow_memory_typing {C : TContext} {x : Nat} {t1s t2s : List ValueType}
+    (h : BeTyping C [.growMemory x] (.tf t1s t2s)) :
+    ∃ (mt : MemoryType) (ts : List ValueType), C.memory[x]? = some mt ∧ t2s = t1s ∧
+      t1s = ts ++ [mt.address.valueType] := by
+  generalize hes : [BasicInstruction.growMemory x] = es at h
   generalize htf : FunctionType.tf t1s t2s = tf at h
   induction h generalizing t1s t2s
-  case growMemory h1 => cases hes; cases htf; exact ⟨[], h1, rfl, rfl⟩
+  case growMemory h1 => cases hes; cases htf; exact ⟨_, [], h1, rfl, rfl⟩
   case composition h1 _ _ ih =>
     obtain ⟨rfl, rfl⟩ := extract_list1 hes.symm
     obtain rfl := empty_typing h1
     exact ih rfl htf
   case weakening ts _ _ _ ih =>
-    cases htf; obtain ⟨ts0, H1, rfl, rfl⟩ := ih hes rfl; exact ⟨ts ++ ts0, H1, rfl, by simp⟩
+    cases htf; obtain ⟨mt, ts0, H1, rfl, rfl⟩ := ih hes rfl
+    exact ⟨mt, ts ++ ts0, H1, rfl, by simp⟩
   all_goals cases hes
 
 @[rocq_alias iriswasm.store_typed_cl_typed]
@@ -1257,9 +1254,10 @@ theorem memi_agree_extension {m0 m1 : List Memory} {n : Nat} {m : MemoryType}
   | some mem0 =>
     obtain ⟨mem1, hm1, hext⟩ := hg n mem0 hm0
     rw [hm0] at h1; rw [hm1]
-    simp only [memTyping, memExtension, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
+    simp only [memTyping, Limits.matches, memExtension, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
       at h1 hext ⊢
-    exact ⟨hl ▸ hn, Nat.le_trans h1.1 hext.1, by rw [← hext.2]; exact h1.2⟩
+    exact ⟨hl ▸ hn, hext.1.1.1.symm.trans h1.1, Nat.le_trans h1.2.1 hext.1.2,
+      by rw [← hext.1.1.2]; exact h1.2.2⟩
 
 @[rocq_alias iriswasm.mem_extension_C]
 theorem mem_extension_C {sm sm' : List Memory} {im : List Nat} {tcm : List MemoryType}
@@ -1279,7 +1277,7 @@ theorem tabi_agree_extension {t0 t1 : List Tableinst} {n : Nat} {t : TableType}
   | some tab0 =>
     obtain ⟨tab1, ht1, hext⟩ := hg n tab0 ht0
     rw [ht0] at h1; rw [ht1]
-    simp only [tabTyping, tabExtension, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
+    simp only [tabTyping, Limits.matches, tabExtension, Bool.and_eq_true, decide_eq_true_eq, beq_iff_eq]
       at h1 hext ⊢
     exact ⟨hl ▸ hn, Nat.le_trans h1.1 hext.1, by rw [← hext.2]; exact h1.2⟩
 
@@ -1480,26 +1478,22 @@ private theorem foldLefti_inv {A B : Type} (P : A → Prop) (f : Nat → A → B
   | nil => intro k acc h; exact h
   | cons x xs ih => intro k acc h; exact ih (k + 1) (f k acc x) (hf _ _ _ h)
 
-private theorem memGrow_spec {m : Memory} {c : Nat} {mem : Memory} (h : memGrow m c = some mem) :
-    memSize mem = memSize m + c ∧ mem.maxOpt = m.maxOpt ∧
-      ∀ n, m.maxOpt = some n → memSize mem ≤ n := by
-  have hsize : memSize { data := m.data.memGrow (c * pageSize), maxOpt := m.maxOpt } =
-      memSize m + c := by
-    simp [memSize, lengthMem, MemoryList.memGrow, MemoryList.lengthMem,
-      Nat.add_mul_div_right _ _ (show 0 < pageSize by decide)]
+theorem memGrow_spec {m mem : Memory} {c : Nat} (h : memGrow m c = some mem) :
+    mem.data = m.data.memGrow (c * pageSize) ∧
+    mem.type = ⟨m.type.address, ⟨memSize m + c, m.type.limits.max⟩⟩ ∧
+    memSize m + c ≤ m.type.address.pageLimit ∧
+    ∀ n, m.type.limits.max = some n → memSize m + c ≤ n := by
   simp only [memGrow] at h
-  split at h
-  · split at h
-    · rename_i n hn
-      split at h
-      · cases h; exact ⟨hsize, rfl, fun k hk => by rw [hn] at hk; cases hk; omega⟩
-      · cases h
-    · rename_i hn; cases h; exact ⟨hsize, rfl, fun k hk => by rw [hn] at hk; cases hk⟩
+  split at h <;> rename_i hc
   · cases h
+    simp only [Bool.and_eq_true, decide_eq_true_eq] at hc
+    refine ⟨rfl, rfl, hc.1, fun n hn => ?_⟩
+    simpa [hn] using hc.2
+  · contradiction
 
-@[rocq_alias iriswasm.write_bytes_preserve_type]
+#rocq_ignore iriswasm.write_bytes_preserve_type "Core byte writes preserve byte length and the entire memory type"
 theorem write_bytes_preserve_type {m : Memory} {pos : Nat} {str : Bytes} {m' : Memory}
-    (h : writeBytes m pos str = some m') : memSize m = memSize m' ∧ m.maxOpt = m'.maxOpt := by
+    (h : writeBytes m pos str = some m') : lengthMem m = lengthMem m' ∧ m.type = m'.type := by
   simp only [writeBytes] at h
   split at h
   · rename_i dat hdat
@@ -1514,7 +1508,7 @@ theorem write_bytes_preserve_type {m : Memory} {pos : Nat} {str : Bytes} {m' : M
           rw [MemoryList.memory_list_ax_length_constant_update _ _ _ _ hd.symm]
           exact ha _ rfl)
       str (some m.data) (fun _ hd => by cases hd; rfl) dat hdat
-    exact ⟨by simp [memSize, lengthMem, this], rfl⟩
+    exact ⟨this.symm, rfl⟩
   · cases h
 
 @[rocq_alias iriswasm.mem_extension_store]
@@ -1526,11 +1520,11 @@ theorem mem_extension_store {m : Memory} {k : Nat} {off : StaticOffset} {v : Val
     simp [memExtension, h1, h2]
   · cases h
 
-@[rocq_alias iriswasm.mem_extension_grow_memory]
+#rocq_ignore iriswasm.mem_extension_grow_memory "Monotonicity of the declared minimum uses memory validity"
 theorem mem_extension_grow_memory {m : Memory} {c : Nat} {mem : Memory}
-    (h : memGrow m c = some mem) : memExtension m mem = true := by
-  obtain ⟨h1, h2, -⟩ := memGrow_spec h
-  simp [memExtension, h1, h2]
+    (ha : MemAgree m) (h : memGrow m c = some mem) : memExtension m mem = true := by
+  obtain ⟨hd, ht, -⟩ := memGrow_spec h
+  simp [memExtension, ht, lengthMem, hd, ← ha.min_eq]
 
 @[rocq_alias iriswasm.store_memory_extension_store_typed]
 theorem store_memory_extension_store_typed {s s' : StoreRecord} (hst : StoreTyping s)
@@ -1602,11 +1596,15 @@ theorem store_mem_agree {s : StoreRecord} {n : Nat} {m : Memory} {k : Nat} {off 
 theorem mem_grow_mem_agree {s : StoreRecord} {n : Nat} {m : Memory} {c : Nat} {mem : Memory}
     (hst : StoreTyping s) (hn : s.mems[n]? = some m) (hg : memGrow m c = some mem) :
     MemAgree mem := by
-  obtain ⟨-, h2, h3⟩ := memGrow_spec hg
-  unfold MemAgree; rw [h2]
-  cases hm : m.maxOpt with
-  | none => trivial
-  | some n => exact h3 n hm
+  obtain ⟨hd, ht, hcap, hmax⟩ := memGrow_spec hg
+  have ha := store_typed_mem_agree hst hn
+  have hv := (limitTyping_iff ..).1 ha.1
+  refine ⟨(limitTyping_iff ..).2 ?_, ?_⟩
+  · rw [ht]; exact ⟨hcap, fun i hi => ⟨hmax i hi, (hv.2 i hi).2⟩⟩
+  · change mem.data.lengthMem = _
+    rw [hd, ht]
+    change lengthMem m + c * pageSize = (memSize m + c) * pageSize
+    rw [← ha.min_eq, ha.2, Nat.add_mul]
 
 private theorem et_pair {s : StoreRecord} {C : TContext} {e1 e2 : BasicInstruction}
     {t1s t2s : List ValueType} (h : ETyping s C [basic e1, basic e2] (.tf t1s t2s)) :
@@ -1686,11 +1684,12 @@ theorem store_extension_reduce {s : StoreRecord} {f : Frame} {es : List Administ
     exact ⟨hext, store_global_extension_store_typed hst hext rfl rfl rfl⟩
   | storeSuccess m _ _ hm hs =>
     exact mem_update_ext hst hm (mem_extension_store hs) (store_mem_agree hst hm hs (lengthT_pos _))
-  | storePackedSuccess m _ _ hm hs =>
+  | storePackedSuccess m _ _ _ hm hs =>
     exact mem_update_ext hst hm (mem_extension_store hs)
       (store_mem_agree hst hm hs (lengthTp_pos _))
-  | growMemorySuccess m _ hm _ hg =>
-    exact mem_update_ext hst hm (mem_extension_grow_memory hg) (mem_grow_mem_agree hst hm hg)
+  | growMemorySuccess m _ hm _ _ hg =>
+    exact mem_update_ext hst hm (mem_extension_grow_memory (store_typed_mem_agree hst hm) hg)
+      (mem_grow_mem_agree hst hm hg)
   | label es es' k lh _ hlf _ ih =>
     obtain ⟨lab', t1s, t2s, H⟩ := lfilled_es_type_exists hlf h
     exact ih (C := C) (loc := loc) (ret := ret) (lab := lab') (hit := hit) (h := H) (hst := hst)
@@ -1797,6 +1796,32 @@ theorem t_preservation_e {s : StoreRecord} {f : Frame} {es : List Administrative
       (.tf t1s t2s) := by
   induction hr generalizing C ret lab t1s t2s with
   | simple hrs => exact t_simple_preservation hit1 h hrs
+  | @block s f bt tn tm vs es hs hc hn =>
+    obtain ⟨vs', rfl⟩ := const_es_exists hc
+    obtain ⟨c, H1, H2⟩ := e_comp_weak h
+    have hc' := Const_list_typing (et_to_bet (const_list_is_basic hc) H1)
+    obtain ⟨ts, tn', tm', ht, rfl, rfl, H3⟩ :=
+      Block_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) H2)
+    rw [(instTyping_spec hit1).1] at hs
+    cases Option.some.inj (hs.symm.trans ht)
+    obtain ⟨rfl, hvs⟩ := concat_cancel_last_n hc'
+      (by simpa only [List.length_map, v_to_e_size] using hn.symm)
+    exact et_weakening_empty_1 _ (.label (.a (bet_weakening_empty_both _ .empty))
+      (et_composition' (ety_a' s (const_list_is_basic hc)
+        (by rw [hvs]; exact Const_list_typing_empty _ vs')) (.a H3)) rfl)
+  | @loop s f bt tn tm vs es hs hc hn =>
+    obtain ⟨vs', rfl⟩ := const_es_exists hc
+    obtain ⟨c, H1, H2⟩ := e_comp_weak h
+    have hc' := Const_list_typing (et_to_bet (const_list_is_basic hc) H1)
+    obtain ⟨ts, tn', tm', ht, rfl, rfl, H3⟩ :=
+      Loop_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) H2)
+    rw [(instTyping_spec hit1).1] at hs
+    cases Option.some.inj (hs.symm.trans ht)
+    obtain ⟨rfl, hvs⟩ := concat_cancel_last_n hc'
+      (by simpa only [List.length_map, v_to_e_size] using hn.symm)
+    exact et_weakening_empty_1 _ (.label (ety_a' s (by simp [EsIsBasic, EIsBasic]) (.loop ht H3))
+      (et_composition' (ety_a' s (const_list_is_basic hc)
+        (by rw [hvs]; exact Const_list_typing_empty _ vs')) (.a H3)) rfl)
   | @call s f i a hi =>
     obtain ⟨ts, t1s', t2s', -, hfT, rfl, rfl⟩ :=
       Call_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) h)
@@ -1821,7 +1846,7 @@ theorem t_preservation_e {s : StoreRecord} {f : Frame} {es : List Administrative
       rw [hfl, List.map_append, ← hzs, n_zeros_typing, ← htn, List.append_assoc]
     rw [← hL] at hB
     exact et_weakening_empty_1 _ (.local (.sTyping (.frameTyping hitC hfi rfl) rfl
-      (ety_a' s (by simp [EsIsBasic, EIsBasic]) (.block hB)) (Or.inl rfl)) ht2)
+      (.label (.a (bet_weakening_empty_both _ .empty)) (.a hB) ht2) (Or.inl rfl)) ht2)
   | @invokeHost a cl hh tn tm ves vcs m n s f hcl hcleq hves hn ht1 ht2 =>
     subst hves hcleq
     obtain ⟨b, H1, H2⟩ := e_comp_weak h
@@ -1850,24 +1875,29 @@ theorem t_preservation_e {s : StoreRecord} {f : Frame} {es : List Administrative
   | loadSuccess | loadPackedSuccess =>
     obtain ⟨a, H1, H2⟩ := et_pair h
     obtain rfl := BI_const_typing H1
-    obtain ⟨ts, heq, rfl, -⟩ := Load_typing H2
+    obtain ⟨_, ts, heq, rfl, -⟩ := Load_typing H2
     obtain ⟨rfl, -⟩ := concat_cancel_last heq
     exact et_const (by rw [typeof_deserialise])
   | storeSuccess | storePackedSuccess =>
     obtain ⟨a, b, H1, H2, H3⟩ := et_triple h
     obtain rfl := BI_const_typing H1
     obtain rfl := BI_const_typing H2
-    obtain ⟨heq, -⟩ := Store_typing H3
+    obtain ⟨_, heq, -⟩ := Store_typing H3
     rw [List.append_assoc] at heq
     exact et_nil (List.append_inj' heq (by simp)).1
-  | currentMemory =>
-    obtain ⟨-, rfl⟩ := Current_memory_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) h)
-    exact et_const rfl
+  | currentMemory _ m hi hm _ _ =>
+    obtain ⟨mt, hmt, rfl⟩ := Current_memory_typing (et_to_bet (by simp [EsIsBasic, EIsBasic]) h)
+    have hag := all2_projection (instTyping_spec hit1).2.2.2.2.1 hi hmt
+    simp only [memiAgree, hm, memTyping, Bool.and_eq_true, beq_iff_eq] at hag
+    apply et_const
+    rw [← hag.2.1]
+    cases m.type.address <;> rfl
   | growMemorySuccess | growMemoryFailure =>
     obtain ⟨a, H1, H2⟩ := et_pair h
     obtain rfl := BI_const_typing H1
-    obtain ⟨ts, -, rfl, -⟩ := Grow_memory_typing H2
-    exact et_const rfl
+    obtain ⟨_, ts, -, rfl, -⟩ := Grow_memory_typing H2
+    apply et_const
+    cases ‹AddressOperand› <;> rfl
   | @label s f es les s' f' es' les' k lh hr' hlf1 hlf2 ih =>
     obtain ⟨lab', _, _, H⟩ := lfilled_es_type_exists hlf1 h
     have hvs := t_preservation_vs_type (C := C) (ret := ret) (lab := lab') hr' hst1 hst2 hit1 hit2 H

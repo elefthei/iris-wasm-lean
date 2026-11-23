@@ -25,7 +25,7 @@ variable {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {f0 : Frame}
 theorem wp_simple_step {es es' : Expr} {v : Val} (hred : ReduceSimple es es')
     (hnv : toVal es = none := by simp [toVal, mergeValuesList, toValInstr, mergeValues, valNotValCombine, valCombine])
     (hv : toVal es' = some v := by simp [toVal, mergeValuesList, toValInstr, mergeValues, valNotValCombine, valCombine])
-    (hgrow : ∀ i, firstInstr es ≠ some (.basic .growMemory, i) := by
+    (hgrow : ∀ x i, firstInstr es ≠ some (.basic (.growMemory x), i) := by
       simp [firstInstr_cons, firstInstrInstr])
     (htrap : ∀ i, firstInstr es ≠ some (.trap, i) := by
       simp [firstInstr_cons, firstInstrInstr]) :
@@ -43,9 +43,9 @@ theorem wp_simple_step {es es' : Expr} {v : Val} (hred : ReduceSimple es es')
   rcases σ₂ with ⟨ws', locs', inst'⟩
   obtain ⟨H, rfl, rfl⟩ := Hstep
   have : (ws, Frame.mk locs inst, es') = (ws', ⟨locs', inst'⟩, e₂) := by
-    rcases reduce_det (.simple hred) H with h | ⟨i, h⟩ | ⟨i, -, -, h, -⟩
+    rcases reduce_det (.simple hred) H with h | ⟨x, i, h⟩ | ⟨i, -, -, h, -⟩
     · exact h
-    · exact absurd h (hgrow i)
+    · exact absurd h (hgrow x i)
     · exact absurd h (htrap i)
   cases this
   imodintro
@@ -54,75 +54,85 @@ theorem wp_simple_step {es es' : Expr} {v : Val} (hred : ReduceSimple es es')
   · ipureintro; exact hv
   · simp; exact .rfl
 
-@[rocq_alias iriswasm.wp_unop]
-theorem wp_unop {v v' : Value} {t : ValueType} {op : Unop} (h : appUnop op v = v') :
+theorem wp_unop {v v' : Value} {t : ValueType} {op : Unop}
+    (ht : typesAgree t v = true) (hop : UnopTypeAgree t op) (h : appUnop op v = v') :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [v']) -∗
       WP ([.basic (.const v), .basic (.unop t op)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) := by
-  subst h; exact wp_simple_step .unop
+  subst h; exact wp_simple_step (.unop ht ((unopTypeOK_iff ..).2 hop))
 
-@[rocq_alias iriswasm.wp_binop]
-theorem wp_binop {v1 v2 v : Value} {t : ValueType} {op : Binop} (h : appBinop op v1 v2 = some v) :
+theorem wp_binop {v1 v2 v : Value} {t : ValueType} {op : Binop}
+    (h1 : typesAgree t v1 = true) (h2 : typesAgree t v2 = true) (hop : BinopTypeAgree t op)
+    (h : appBinop op v1 v2 = some v) :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [v]) -∗
       WP ([.basic (.const v1), .basic (.const v2), .basic (.binop t op)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) :=
-  wp_simple_step (.binopSuccess h)
+  wp_simple_step (.binopSuccess h1 h2 ((binopTypeOK_iff ..).2 hop) h)
 
-@[rocq_alias iriswasm.wp_binop_failure]
 theorem wp_binop_failure {v1 v2 : Value} {t : ValueType} {op : Binop}
+    (h1 : typesAgree t v1 = true) (h2 : typesAgree t v2 = true) (hop : BinopTypeAgree t op)
     (h : appBinop op v1 v2 = none) :
     ⊢ iprop(▷ Φ .trapV -∗ ↪[frame] f0 -∗
       WP ([.basic (.const v1), .basic (.const v2), .basic (.binop t op)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) := by
   iintro HΦ Hf
-  iapply (wp_simple_step (s := s) (E := E) (Φ := Φ) (f0 := f0) (.binopFailure h)) $$ Hf HΦ
+  iapply (wp_simple_step (s := s) (E := E) (Φ := Φ) (f0 := f0)
+    (.binopFailure h1 h2 ((binopTypeOK_iff ..).2 hop) h)) $$ Hf HΦ
 
-@[rocq_alias iriswasm.wp_relop]
 theorem wp_relop {v1 v2 : Value} {b : Bool} {t : ValueType} {op : Relop}
+    (ht₁ : typesAgree t v1 = true) (ht₂ : typesAgree t v2 = true) (hop : RelopTypeAgree t op)
     (h : appRelop op v1 v2 = b) :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool b)]) -∗
       WP ([.basic (.const v1), .basic (.const v2), .basic (.relop t op)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) := by
-  subst h; exact wp_simple_step .relop
+  subst h; exact wp_simple_step (.relop ht₁ ht₂ ((relopTypeOK_iff ..).2 hop))
 
-@[rocq_alias iriswasm.wp_testop_i32]
-theorem wp_testop_i32 {v : I32} {b : Bool} {op : Testop} (h : appTestopI op v = b) :
-    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool b)]) -∗
-      WP ([.basic (.const (.int32 v)), .basic (.testop .i32 op)] : Expr) @ s ; E
-        {{ v, Φ v ∗ ↪[frame] f0 }}) := by
-  subst h; exact wp_simple_step .testopI32
+theorem wp_testop_i32 {v : I32} :
+    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool (Wasm.Int.ieqz v))]) -∗
+      WP ([.basic (.const (.int32 v)), .basic (.testop .i32 .eqz)] : Expr) @ s ; E
+        {{ v, Φ v ∗ ↪[frame] f0 }}) :=
+  wp_simple_step .testopI32
 
-@[rocq_alias iriswasm.wp_testop_i64]
-theorem wp_testop_i64 {v : I64} {b : Bool} {op : Testop} (h : appTestopI op v = b) :
-    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool b)]) -∗
-      WP ([.basic (.const (.int64 v)), .basic (.testop .i64 op)] : Expr) @ s ; E
-        {{ v, Φ v ∗ ↪[frame] f0 }}) := by
-  subst h; exact wp_simple_step .testopI64
+theorem wp_testop_i64 {v : I64} :
+    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool (Wasm.Int.ieqz v))]) -∗
+      WP ([.basic (.const (.int64 v)), .basic (.testop .i64 .eqz)] : Expr) @ s ; E
+        {{ v, Φ v ∗ ↪[frame] f0 }}) :=
+  wp_simple_step .testopI64
 
-@[rocq_alias iriswasm.wp_cvtop_convert]
+theorem wp_testop_v128 {v : BitVec 128} :
+    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.int32 (wasmBool (v != 0))]) -∗
+      WP ([.basic (.const (.vec128 v)), .basic (.testop .v128 .anyTrue)] : Expr) @ s ; E
+        {{ v, Φ v ∗ ↪[frame] f0 }}) :=
+  wp_simple_step .testopV128
+
 theorem wp_cvtop_convert {v v' : Value} {t1 t2 : ValueType} {sx : Option Sx}
-    (h : cvt t2 sx v = some v') (ht : typesAgree t1 v = true) :
+    (h : cvt t2 sx v = some v') (ht : typesAgree t1 v = true) (hop : convertCond t2 t1 sx) :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [v']) -∗
       WP ([.basic (.const v), .basic (.cvtop t2 .convert t1 sx)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) :=
-  wp_simple_step (.convertSuccess ht h)
+  wp_simple_step (.convertSuccess ht hop h)
 
-@[rocq_alias iriswasm.wp_cvtop_convert_failure]
 theorem wp_cvtop_convert_failure {v : Value} {t1 t2 : ValueType} {sx : Option Sx}
-    (h : cvt t2 sx v = none) (ht : typesAgree t1 v = true) :
+    (h : cvt t2 sx v = none) (ht : typesAgree t1 v = true) (hop : convertCond t2 t1 sx) :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ .trapV -∗
       WP ([.basic (.const v), .basic (.cvtop t2 .convert t1 sx)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) :=
-  wp_simple_step (.convertFailure ht h)
+  wp_simple_step (.convertFailure ht hop h)
 
-@[rocq_alias iriswasm.wp_cvtop_reinterpret]
 theorem wp_cvtop_reinterpret {v v' : Value} {t1 t2 : ValueType}
-    (h : wasmDeserialise (bits v) t2 = v') (ht : typesAgree t1 v = true) :
+    (h : wasmDeserialise (bits v) t2 = v') (ht : typesAgree t1 v = true) (hop : reinterpretCond t2 t1) :
     ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [v']) -∗
       WP ([.basic (.const v), .basic (.cvtop t2 .reinterpret t1 none)] : Expr) @ s ; E
         {{ v, Φ v ∗ ↪[frame] f0 }}) := by
   subst h
-  exact wp_simple_step (.reinterpret ht)
+  exact wp_simple_step (.reinterpret ht hop)
+
+theorem wp_cvtop_truncSat {v w : Value} {src dst : ValueType} {sx : Sx}
+    (h : truncSat dst sx v = some w) (ht : typesAgree src v = true) :
+    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [w]) -∗
+      WP ([.basic (.const v), .basic (.cvtop dst .truncSat src (some sx))] : Expr) @ s ; E
+        {{ v, Φ v ∗ ↪[frame] f0 }}) :=
+  wp_simple_step (.truncSat ht h)
 
 @[rocq_alias iriswasm.wp_unreachable]
 theorem wp_unreachable :
@@ -155,5 +165,12 @@ theorem wp_select_true {n : I32} {v1 v2 : Value} (h : n ≠ Int.zero) :
       WP ([.basic (.const v1), .basic (.const v2), .basic (.const (.int32 n)), .basic .select] : Expr)
         @ s ; E {{ w, Φ w ∗ ↪[frame] f0 }}) :=
   wp_simple_step (.selectTrue h)
+
+theorem wp_vbitselect {x y mask : BitVec 128} :
+    ⊢ iprop(↪[frame] f0 -∗ ▷ Φ (.immV [.vec128 (vbitselect x y mask)]) -∗
+      WP ([.basic (.const (.vec128 x)), .basic (.const (.vec128 y)),
+        .basic (.const (.vec128 mask)), .basic .vbitselect] : Expr)
+        @ s ; E {{ w, Φ w ∗ ↪[frame] f0 }}) :=
+  wp_simple_step .vbitselect
 
 end IrisWasm

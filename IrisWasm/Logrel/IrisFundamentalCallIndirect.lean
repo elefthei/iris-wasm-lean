@@ -64,28 +64,26 @@ theorem interp_closure_type (hl : List (Hostfuncidx × FunctionType)) (τf : Fun
 
 end FundAux
 
-@[rocq_alias iriswasm.interp_instance_get_table]
 theorem interp_instance_get_table (C : TContext) (hl : List (Hostfuncidx × FunctionType))
-    (j : Instance) (hnil : C.table ≠ []) :
+    (j : Instance) (x : Nat) (hx : x < C.table.length) :
     ⊢ interpInstance (GF := GF) C hl j -∗
-      ∃ (τt : TableType) (a : Nat), ⌜C.table[0]? = some τt⌝ ∗ ⌜j.tab[0]? = some a⌝ ∗
+      ∃ (τt : TableType) (a : Nat), ⌜C.table[x]? = some τt⌝ ∗ ⌜j.tab[x]? = some a⌝ ∗
         ∃ (tableSize : Nat), a ↪[wtsize] tableSize ∗
           interpTable tableSize (fun _ => interpClosure hl) a := by
-  iintro #Hi
+  iintro Hi
   iunfold interpInstance, interpInstance' at Hi
   icases Hi with ⟨-, -, Ht, -⟩
-  rcases h0 : C.table[0]? with _ | τt
-  · exact absurd (List.eq_nil_of_length_eq_zero
-      (by simpa using (List.getElem?_eq_none_iff.1 h0))) hnil
-  rcases h1 : j.tab[0]? with _ | a
-  · iexfalso; iexact Ht
-  icases Ht with ⟨%ts, %tl, -, -, #Hsize, #Ht⟩
-  iexists τt, a
-  isplitr; · ipureintro; rfl
-  isplitr; · ipureintro; rfl
+  ihave %hlen := BigSepL2.bigSepL2_length $$ Ht
+  have ha : j.tab[x]? = some (j.tab[x]'(by omega)) := List.getElem?_eq_getElem _
+  have ht := List.getElem?_eq_getElem hx
+  ihave ⟨H, -⟩ := BigSepL2.bigSepL2_lookup_acc ha ht $$ Ht
+  iunfold interpTableAt at H
+  icases H with ⟨%ts, %tl, -, -, Hsize, Hentries⟩
+  iexists C.table[x], j.tab[x]'(by omega)
+  isplitr; · ipureintro; exact ht
+  isplitr; · ipureintro; exact ha
   iexists ts
-  isplitr; · iexact Hsize
-  iexact Ht
+  iframe
 
 @[rocq_alias iriswasm.interp_instance_type_lookup]
 theorem interp_instance_type_lookup (C : TContext) (hl : List (Hostfuncidx × FunctionType))
@@ -117,7 +115,7 @@ theorem typing_call_indirect (C : TContext) (i : Nat) (t1s t2s : List ValueType)
     isimp only [interpValue, interpValueI32] at Hw2
     iexact Hw2
   obtain ⟨z, rfl⟩ := Hz
-  icases interp_instance_get_table C hl j htable $$ Hi with
+  icases interp_instance_get_table C hl j 0 (List.length_pos_iff.2 htable) $$ Hi with
     ⟨%τt, %ta, %Hlook1, %Hlook2, %tsize, #Htsize, #Ht⟩
   ihave %Htlook := interp_instance_type_lookup C hl i _ j hnth $$ Hi
   unfold interpFrame

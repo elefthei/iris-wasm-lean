@@ -132,22 +132,18 @@ theorem glob_context_store {s : StoreRecord} {i : Instance} {C : TContext} {j : 
   simp [globalsAgree] at this
   simp [sglob, sglobInd, optionBind, hk, this.1]
 
-@[rocq_alias iriswasm.mem_context_store]
-theorem mem_context_store {s : StoreRecord} {i : Instance} {C : TContext}
-    (hit : instTyping s i C = true) (hm : C.memory ≠ []) :
-    ∃ n, smemInd s i = some n ∧ s.mems[n]? ≠ none := by
-  obtain ⟨ts, fs, tbs, ms, gs⟩ := i
-  obtain ⟨ts', tfs, tgs, tabsT, memsT, loc, lab, ret⟩ := C
-  cases loc <;> cases lab <;> cases ret <;> simp [instTyping, and_assoc] at hit
-  obtain ⟨-, -, -, -, hmm⟩ := hit
-  cases memsT with
-  | nil => exact absurd rfl hm
-  | cons mt memsT =>
-    cases ms with
-    | nil => simp at hmm
-    | cons m ms =>
-      simp [memiAgree] at hmm
-      exact ⟨m, rfl, by simp [hmm.1.1]⟩
+#rocq_ignore iriswasm.mem_context_store "Core resolves the selected memory rather than memory zero"
+theorem mem_context_store {s : StoreRecord} {i : Instance} {C : TContext} {x : Nat} {mt : MemoryType}
+    (hit : instTyping s i C = true) (hx : C.memory[x]? = some mt) :
+    ∃ n m, i.memory[x]? = some n ∧ s.mems[n]? = some m ∧ memTyping m mt = true := by
+  have hall := (instTyping_spec hit).2.2.2.2.1
+  have hlen := all2_size _ _ _ hall
+  obtain ⟨hx', _⟩ := List.getElem?_eq_some_iff.1 hx
+  have hn := List.getElem?_eq_getElem (l := i.memory) (i := x) (hlen ▸ hx')
+  have hag := all2_projection hall hn hx
+  simp only [memiAgree, Bool.and_eq_true, decide_eq_true_eq] at hag
+  have hm := List.getElem?_eq_getElem hag.1
+  exact ⟨_, _, hn, hm, by simpa only [hm] using hag.2⟩
 
 @[rocq_alias iriswasm.store_typing_stabaddr]
 theorem store_typing_stabaddr {s : StoreRecord} {f : Frame} {C : TContext} {c a : Nat}
@@ -160,9 +156,10 @@ theorem store_typing_stabaddr {s : StoreRecord} {f : Frame} {C : TContext} {c a 
   | cons ta _ =>
     simp only [stabIndex, optionBind] at h
     rcases ht : s.tables[ta]? with _ | t <;> simp [ht] at h
-    rcases hd : t.data[c]? with _ | x <;> simp [hd] at h
+    rcases hd : t.entries.get? c with _ | x <;> simp [hd] at h
+    have hd' : t.data[c]? = some x := by simpa only [Tableinst.data_getElem?] using hd
     subst h
-    have := (hst.2.1 t (List.mem_of_getElem? ht)).1 _ (List.mem_of_getElem? hd)
+    have := (hst.2.1 t (List.mem_of_getElem? ht)).1 _ (List.mem_of_getElem? hd')
     simp [TabclAgree] at this
     exact ⟨_, List.getElem?_eq_getElem this⟩
 
@@ -262,45 +259,57 @@ theorem t_progress_be {C : TContext} {bes : List BasicInstruction} {ts1 ts2 : Li
   intro C0 bes tf htype hC0
   induction htype with
   | const => intros; exact .inl rfl
-  | unop _ =>
+  | unop hop =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
-    exact .inr ⟨_, _, _, .simple .unop⟩
-  | binop _ =>
+    exact .inr ⟨_, _, _, .simple (.unop (by simpa [typesAgree] using hct) ((unopTypeOK_iff ..).2 hop))⟩
+  | @binop _ t op hop =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v1, _ | ⟨v2, _ | ⟨_, _⟩⟩⟩ <;> simp at hct
-    rcases hb : appBinop _ v1 v2 with _ | v
-    · exact .inr ⟨_, _, _, .simple (.binopFailure hb)⟩
-    · exact .inr ⟨_, _, _, .simple (.binopSuccess hb)⟩
-  | testop hi =>
+    have h1 : typesAgree t v1 = true := by simpa [typesAgree] using hct.1
+    have h2 : typesAgree t v2 = true := by simpa [typesAgree] using hct.2
+    have hok := (binopTypeOK_iff ..).2 hop
+    rcases hb : appBinop op v1 v2 with _ | v
+    · exact .inr ⟨_, _, _, .simple (.binopFailure h1 h2 hok hb)⟩
+    · exact .inr ⟨_, _, _, .simple (.binopSuccess h1 h2 hok hb)⟩
+  | @testop _ t op hi =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
     subst hct
-    rcases v with c | c | c | c <;> simp [typeof, isIntT] at hi
+    cases v <;> cases op <;> simp [typeof, testopTypeOK, isIntT] at hi
     · exact .inr ⟨_, _, _, .simple .testopI32⟩
     · exact .inr ⟨_, _, _, .simple .testopI64⟩
-  | relop _ =>
+    · exact .inr ⟨_, _, _, .simple .testopV128⟩
+  | relop hop =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v1, _ | ⟨v2, _ | ⟨_, _⟩⟩⟩ <;> simp at hct
-    exact .inr ⟨_, _, _, .simple .relop⟩
-  | convert _ _ =>
+    exact .inr ⟨_, _, _, .simple (.relop (by simpa [typesAgree] using hct.1)
+      (by simpa [typesAgree] using hct.2) ((relopTypeOK_iff ..).2 hop))⟩
+  | convert hne hform =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
     subst hct
     have hta : typesAgree (typeof v) v = true := by simp [typesAgree]
     rcases hcv : cvt _ _ v with _ | v'
-    · exact .inr ⟨_, _, _, .simple (.convertFailure hta hcv)⟩
-    · exact .inr ⟨_, _, _, .simple (.convertSuccess hta hcv)⟩
-  | reinterpret _ _ =>
+    · exact .inr ⟨_, _, _, .simple (.convertFailure hta (by simp [convertCond, hne, hform]) hcv)⟩
+    · exact .inr ⟨_, _, _, .simple (.convertSuccess hta (by simp [convertCond, hne, hform]) hcv)⟩
+  | reinterpret hne hsize =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
-    exact .inr ⟨_, _, _, .simple (.reinterpret (by simp [typesAgree, hct]))⟩
+    exact .inr ⟨_, _, _, .simple (.reinterpret (by simp [typesAgree, hct])
+      (by simpa [reinterpretCond, hne, Nat.beq_eq_true_eq] using hsize))⟩
+  | @truncSat _ dst src sx hd hs =>
+    intro ts1 ts2 vcs htf hct _ _
+    injection htf with h1 h2; subst h1 h2
+    rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
+    obtain ⟨w, hw⟩ := truncSat_total (v := v) sx hd (hct.symm ▸ hs)
+    exact .inr ⟨_, _, _, .simple (.truncSat (by simp [typesAgree, hct]) hw)⟩
   | unreachable =>
     intro _ _ vcs _ _ _ _
     exact .inr (reduce_pre vcs ⟨_, _, _, .simple .unreachable⟩)
@@ -321,17 +330,26 @@ theorem t_progress_be {C : TContext} {bes : List BasicInstruction} {ts1 ts2 : Li
     by_cases hn : n = Int.zero
     · exact .inr ⟨_, _, _, .simple (.selectFalse hn)⟩
     · exact .inr ⟨_, _, _, .simple (.selectTrue hn)⟩
-  | block _ =>
+  | vbitselect =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
-    exact .inr ⟨_, _, _, .simple (.block vcs.length (v_to_e_is_const_list _) (v_to_e_size _)
-      (by rw [← hct, List.length_map]) rfl)⟩
-  | loop _ =>
+    rcases vcs with _ | ⟨x, _ | ⟨y, _ | ⟨mask, _ | ⟨_, _⟩⟩⟩⟩ <;> simp at hct
+    obtain ⟨hx, hy, hm⟩ := hct
+    cases x <;> simp [typeof] at hx
+    cases y <;> simp [typeof] at hy
+    cases mask <;> simp [typeof] at hm
+    exact .inr ⟨_, _, _, .simple .vbitselect⟩
+  | @block _ bt _ _ _ hs _ =>
     intro ts1 ts2 vcs htf hct _ _
-    injection htf with h1 h2; subst h1 h2
-    exact .inr ⟨_, _, _, .simple (.loop _ (v_to_e_is_const_list _) (v_to_e_size _)
-      (by rw [← hct, List.length_map]) rfl)⟩
-  | ifWasm _ _ =>
+    injection htf with h1 h2; subst h1 h2 hC0
+    exact .inr ⟨_, _, _, .block ((congrArg (expandBlockType · bt) (instTyping_spec hit).1).trans hs)
+      (v_to_e_is_const_list vcs) (by simpa only [v_to_e_size, List.length_map] using congrArg List.length hct)⟩
+  | @loop _ bt _ _ _ hs _ =>
+    intro ts1 ts2 vcs htf hct _ _
+    injection htf with h1 h2; subst h1 h2 hC0
+    exact .inr ⟨_, _, _, .loop ((congrArg (expandBlockType · bt) (instTyping_spec hit).1).trans hs)
+      (v_to_e_is_const_list vcs) (by simpa only [v_to_e_size, List.length_map] using congrArg List.length hct)⟩
+  | ifWasm _ _ _ =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2
     obtain ⟨v, hv, -, hvt⟩ := typeof_append hct
@@ -423,51 +441,49 @@ theorem t_progress_be {C : TContext} {bes : List BasicInstruction} {ts1 ts2 : Li
       rcases hk : sglobInd s f.inst i with _ | k <;>
         simp_all [supdateGlob, sglob, optionBind, supdateGlobS]
     · exact .inr ⟨_, _, _, .setGlobal hsu⟩
-  | @load _ a off tpSx t hm _ =>
+  | @load _ ma tpSx t mt hm hbounds _ =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2 hC0
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
-    rcases v with k | _ | _ | _ <;> simp [typeof] at hct
-    obtain ⟨n, hsi, hmn⟩ := mem_context_store hit hm
-    obtain ⟨m, hmm⟩ := Option.ne_none_iff_exists'.1 hmn
+    obtain ⟨k, rfl, -⟩ := AddressOperand.exists_of_type hct
+    obtain ⟨n, m, hsi, hmm, -⟩ := mem_context_store hit hm
     rcases tpSx with _ | ⟨tp, sx⟩
-    · rcases hl : load m (Int.nOfUint k) _ _ with _ | bs
-      · exact .inr ⟨_, _, _, .loadFailure n m hsi hmm hl⟩
-      · exact .inr ⟨_, _, _, .loadSuccess n m hsi hmm hl⟩
-    · rcases hl : loadPacked sx m (Int.nOfUint k) _ _ _ with _ | bs
-      · exact .inr ⟨_, _, _, .loadPackedFailure n m hsi hmm hl⟩
-      · exact .inr ⟨_, _, _, .loadPackedSuccess n m hsi hmm hl⟩
-  | @store _ a off tp t hm _ =>
+    · rcases hl : load m k.unsigned ma.offset (lengthT t) with _ | bs
+      · exact .inr ⟨_, _, _, .loadFailure (k := k) n m hsi hmm hl⟩
+      · exact .inr ⟨_, _, _, .loadSuccess (k := k) n m hsi hmm hl⟩
+    · have hp := packedTypeOK_of_bounds (a := ma.align) (tp := tp) (t := t) hbounds
+      rcases hl : loadPacked sx m k.unsigned ma.offset (lengthTp tp) (lengthT t) with _ | bs
+      · exact .inr ⟨_, _, _, .loadPackedFailure (k := k) n m hp hsi hmm hl⟩
+      · exact .inr ⟨_, _, _, .loadPackedSuccess (k := k) n m hp hsi hmm hl⟩
+  | @store _ ma tp t mt hm hbounds _ =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2 hC0
     rcases vcs with _ | ⟨v1, _ | ⟨v, _ | ⟨_, _⟩⟩⟩ <;> simp at hct
     obtain ⟨h1, h2⟩ := hct
-    rcases v1 with k | _ | _ | _ <;> simp [typeof] at h1
+    obtain ⟨k, rfl, -⟩ := AddressOperand.exists_of_type h1
     have hta : typesAgree t v = true := by simp [typesAgree, h2]
-    obtain ⟨n, hsi, hmn⟩ := mem_context_store hit hm
-    obtain ⟨m, hmm⟩ := Option.ne_none_iff_exists'.1 hmn
+    obtain ⟨n, m, hsi, hmm, -⟩ := mem_context_store hit hm
     rcases tp with _ | tp
-    · rcases hl : store m (Int.nOfUint k) _ (bits v) _ with _ | m'
-      · exact .inr ⟨_, _, _, .storeFailure n m hta hsi hmm hl⟩
-      · exact .inr ⟨_, _, _, .storeSuccess m hta hsi hmm hl⟩
-    · rcases hl : storePacked m (Int.nOfUint k) _ (bits v) (lengthTp tp) with _ | m'
-      · exact .inr ⟨_, _, _, .storePackedFailure n m hta hsi hmm hl⟩
-      · exact .inr ⟨_, _, _, .storePackedSuccess m hta hsi hmm hl⟩
+    · rcases hl : store m k.unsigned ma.offset (bits v) (lengthT t) with _ | m'
+      · exact .inr ⟨_, _, _, .storeFailure (k := k) n m hta hsi hmm hl⟩
+      · exact .inr ⟨_, _, _, .storeSuccess (k := k) m hta hsi hmm hl⟩
+    · have hp := packedTypeOK_of_bounds hbounds
+      rcases hl : storePacked m k.unsigned ma.offset (bits v) (lengthTp tp) with _ | m'
+      · exact .inr ⟨_, _, _, .storePackedFailure (k := k) n m hp hta hsi hmm hl⟩
+      · exact .inr ⟨_, _, _, .storePackedSuccess (k := k) m hp hta hsi hmm hl⟩
   | currentMemory hm =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2 hC0
     obtain rfl : vcs = [] := List.map_eq_nil_iff.1 hct
-    obtain ⟨n, hsi, hmn⟩ := mem_context_store hit hm
-    obtain ⟨m, hmm⟩ := Option.ne_none_iff_exists'.1 hmn
-    exact .inr ⟨_, _, _, .currentMemory n m hsi hmm rfl⟩
-  | growMemory hm =>
+    obtain ⟨n, m, hsi, hmm, -⟩ := mem_context_store hit hm
+    have hw := (store_typed_mem_agree hst hmm).wellSized
+    exact .inr ⟨_, _, _, .currentMemory n m hsi hmm hw.pages_mul hw.pages_fit⟩
+  | growMemory _ =>
     intro ts1 ts2 vcs htf hct _ _
     injection htf with h1 h2; subst h1 h2 hC0
     rcases vcs with _ | ⟨v, _ | ⟨_, _⟩⟩ <;> simp at hct
-    rcases v with c | _ | _ | _ <;> simp [typeof] at hct
-    obtain ⟨n, hsi, hmn⟩ := mem_context_store hit hm
-    obtain ⟨m, hmm⟩ := Option.ne_none_iff_exists'.1 hmn
-    exact .inr ⟨_, _, _, .growMemoryFailure n m _ hsi hmm rfl⟩
+    obtain ⟨c, rfl, -⟩ := AddressOperand.exists_of_type hct
+    exact .inr ⟨_, _, _, .growMemoryFailure (c := c)⟩
   | empty => intros; exact .inl rfl
   | composition h1 _ ih1 ih2 =>
     rename_i es e t1s t2s t3s

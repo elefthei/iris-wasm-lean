@@ -6,7 +6,7 @@ Authors: Iris-Wasm Lean port contributors
 import IrisWasm.Host.IrisHost
 import IrisWasm.Logrel.IrisInterpInstanceAlloc
 import IrisWasm.Rules.IrisExampleHelper
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/iris_robust_example.v`.
 
@@ -44,8 +44,8 @@ This program is called 'return' because the value is returned instead of being s
 global. -/
 @[rocq_alias iriswasm.lse_expr_return]
 def lseExprReturn (a : Nat) : List BasicInstruction :=
-  [.const (xx 0), .const (xx 42), .store .i32 none 0 0, .call a, .const (xx 0),
-   .load .i32 none 0 0]
+  [.const (xx 0), .const (xx 42), .store .i32 none ⟨0, 0, 0⟩, .call a, .const (xx 0),
+   .load .i32 none ⟨0, 0, 0⟩]
 
 @[rocq_alias iriswasm.lse_return]
 def lseReturn (a : Nat) : Expr := toEList (lseExprReturn a)
@@ -71,17 +71,18 @@ theorem lse_return_spec (f : Frame) (n j a : Nat) (C : TContext) (i : Instance)
   iintro %Φ ⟨Hf, Hown, #Ha, #Hi, ⟨%c, Hn⟩⟩ HΦ
   iapply wp_wand_s $$ [-HΦ] HΦ
   rw [show lseReturn j = ([.basic (.const (xx 0)), .basic (.const (xx 42)),
-      .basic (.store .i32 none 0 0)] : Expr) ++
-      [.basic (.call j), .basic (.const (xx 0)), .basic (.load .i32 none 0 0)] from rfl]
+      .basic (.store .i32 none ⟨0, 0, 0⟩)] : Expr) ++
+      [.basic (.call j), .basic (.const (xx 0)), .basic (.load .i32 none ⟨0, 0, 0⟩)] from rfl]
   iapply wp_seq _ _ _ (fun w => iprop((⌜w = .immV []⌝ ∗ n ↦[wms][ 0 ] (bits (xx 42))) ∗
     ↪[frame] f))
   isplitr
   · iintro ⟨⟨%H, -⟩, -⟩; cases H
   isplitl [Hf Hn]
-  · have H := wp_store (GF := GF) (fun w => iprop(⌜w = Val.immV []⌝)) .NotStuck ⊤ .i32 (xx 42)
-      (bits (.int32 c)) 0 0 (Wasm.Int.intOfZ 0) n f rfl
+  · have H := wp_store (GF := GF) (x := 0) (fun w => iprop(⌜w = Val.immV []⌝))
+      .NotStuck ⊤ .i32 (xx 42)
+      (bits (.int32 c)) 0 0 (.i32 (Wasm.Int.intOfZ 0)) n f rfl
       (by simp [bits, lengthT, serialiseI32, length_encodeInt]) hn
-    rw [show Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 0) + 0 = 0 from rfl] at H
+    rw [show (AddressOperand.i32 (Wasm.Int.intOfZ 0)).unsigned + 0 = 0 from rfl] at H
     simp only [xx] at H ⊢
     iapply H
     iframe
@@ -89,8 +90,10 @@ theorem lse_return_spec (f : Frame) (n j a : Nat) (C : TContext) (i : Instance)
   iintro %w ⟨⟨%hw, Hn⟩, Hf⟩
   subst hw
   simp only [ofVal, vToEList, List.map_nil, List.nil_append]
-  rw [show ([.basic (.call j), .basic (.const (xx 0)), .basic (.load .i32 none 0 0)] : Expr) =
-    [] ++ [.basic (.call j)] ++ [.basic (.const (xx 0)), .basic (.load .i32 none 0 0)] from rfl]
+  rw [show ([.basic (.call j), .basic (.const (xx 0)),
+      .basic (.load .i32 none ⟨0, 0, 0⟩)] : Expr) =
+    [] ++ [.basic (.call j)] ++
+      [.basic (.const (xx 0)), .basic (.load .i32 none ⟨0, 0, 0⟩)] from rfl]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_base_push rfl
   iapply wp_call_ctx .NotStuck ⊤ _ f j a 0 _ ha $$ Hf
@@ -122,30 +125,19 @@ theorem lse_return_spec (f : Frame) (n j a : Nat) (C : TContext) (i : Instance)
     imod Hcls $$ [Haf Hown] with Hown
     · iframe
     imodintro
-    ihave H : wpWasmCtxFrame .NotStuck ⊤ [.basic (.block (.tf [] []) es)]
-        (fun v => iprop((interpVal [] v ∗ NonAtomicInvariant.own logrelNais ⊤) ∗ ↪[frame] f))
-        0 ⟨[] ++ nZeros locs, i⟩ 0 (.base [] []) $$ [Hf Hown]
-    · rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) es)]]
-      iapply wp_block_local_ctx (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-      inext
-      iintro Hf
-      iapply (wandIff_equiv (wp_wasm_empty_ctx_frame _ _ _ _ _ _)).1
-      unfold wpWasmFrame
-      simp only [List.nil_append]
-      ihave Hl := be_fundamental_local (GF := GF) C es [] [] locs hC hes
-      iunfold semanticTypingLocalNoHost at Hl
-      icases Hl with ⟨-, Hl⟩
-      iunfold interpExpressionClosureNoHost at Hl
-      iapply Hl $$ %i Hi %f %(nZeros locs) Hf Hown
-      simp only [List.nil_append]
-      iunfold interpVal
+    ihave Hl := be_fundamental_local (GF := GF) C es [] [] locs hC hes
+    iunfold semanticTypingLocalNoHost at Hl
+    icases Hl with ⟨-, Hl⟩
+    iunfold interpExpressionClosureNoHost at Hl
+    ihave H := Hl $$ %i Hi %f %(nZeros locs) Hf Hown []
+    · iunfold interpVal
       iright
       iunfold interpValues
       iexists nZeros locs
       isplitr; · ipureintro; rfl
+      simp only [List.nil_append]
       iapply n_zeros_interp_values
-    unfold wpWasmCtxFrame
-    ispecialize H $$ %_ %(FundAux.lfilled_empty'.2 rfl)
+    simp only [List.nil_append]
     iapply wp_wand_s $$ H
     iintro %v ⟨⟨Hv, Hown⟩, Hf⟩
     iframe Hf
@@ -164,9 +156,10 @@ theorem lse_return_spec (f : Frame) (n j a : Nat) (C : TContext) (i : Instance)
   iapply wp_base_pull
   simp only [pullBase, ofVal, vToEList, List.map_nil, List.nil_append, List.append_nil]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).1
-  have H := wp_load (GF := GF) (fun w => iprop(⌜w = Val.immV [xx 42]⌝)) .NotStuck ⊤ .i32 (xx 42)
-    0 0 (Wasm.Int.intOfZ 0) n f rfl hn
-  rw [show Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 0) + 0 = 0 from rfl] at H
+  have H := wp_load (GF := GF) (x := 0) (fun w => iprop(⌜w = Val.immV [xx 42]⌝))
+    .NotStuck ⊤ .i32 (xx 42)
+    0 0 (.i32 (Wasm.Int.intOfZ 0)) n f rfl hn
+  rw [show (AddressOperand.i32 (Wasm.Int.intOfZ 0)).unsigned + 0 = 0 from rfl] at H
   simp only [xx] at H ⊢
   iapply wp_wand_s $$ [Hn Hf]
   · iapply H
@@ -181,8 +174,8 @@ theorem lse_return_spec (f : Frame) (n j a : Nat) (C : TContext) (i : Instance)
 /-- Setting the memory value to a global instead of returning it. -/
 @[rocq_alias iriswasm.lse_expr]
 def lseExpr (a n : Nat) : List BasicInstruction :=
-  [.const (xx 0), .const (xx 42), .store .i32 none 0 0, .call a, .const (xx 0),
-   .load .i32 none 0 0, .setGlobal n]
+  [.const (xx 0), .const (xx 42), .store .i32 none ⟨0, 0, 0⟩, .call a, .const (xx 0),
+   .load .i32 none ⟨0, 0, 0⟩, .setGlobal n]
 
 @[rocq_alias iriswasm.lse]
 def lse (a n : Nat) : Expr := toEList (lseExpr a n)
@@ -278,14 +271,10 @@ theorem RobustAux.lse_start_spec (inst : Instance) (idnstart n a k : Nat) (C : T
   have hfb := wp_frame_bind (GF := GF) .NotStuck ⊤
     (fun w => iprop((⌜w = .trapV⌝ ∨ (⌜w = .immV []⌝ ∗ k ↦[wg] (⟨.mut, xx 42⟩ : Global))) ∗
       ↪[frame] emptyFrame)) 0 ⟨[] ++ nZeros [], inst⟩ emptyFrame
-    [.basic (.block (.tf [] []) (lseExpr 0 0))] (by simp [toVal, toValInstr, mergeValuesList])
+    [.label 0 [] (toEList (lseExpr 0 0))] (toVal_native_frame_none _ _ _)
   unfold wpWasmFrame at hfb
   iapply hfb $$ Hf
   iintro Hf
-  rw [show ([.basic (.block (.tf [] []) (lseExpr 0 0))] : Expr) =
-    [] ++ [.basic (.block (.tf [] []) (lseExpr 0 0))] from rfl]
-  iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
-  inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   iapply wp_ctx_bind _ _ _ _ 1 (pushBase (.base [] []) 0 [] [] []) (by simp [BaseIsEmpty, pushBase])
@@ -353,7 +342,7 @@ def lseModule : Module where
   types := [.tf [] [], .tf [] []]
   funcs := [{ type := .typeidx 0, locals := [], body := lseExpr 0 0 }]
   tables := []
-  mems := [{ min := 1, max := none }]
+  mems := [{ address := .i32, limits := ⟨1, none⟩ }]
   globals := []
   elem := []
   data := []
@@ -372,9 +361,8 @@ def lseGlobImpts : List ExternT := [.glob { mut_ := .mut, t := .i32 }]
 
 @[rocq_alias iriswasm.iris_robust_example.lse_module_typing]
 theorem lse_module_typing : ModuleTyping lseModule (lseFuncImpts ++ lseGlobImpts) [] := by
-  refine ⟨[.tf [] []], [], ?_⟩
-  refine ⟨.cons ?_ .nil, rfl, rfl, .nil, by simp, by simp, rfl, .cons rfl (.cons rfl .nil), .nil⟩
-  exact ⟨by decide, by decide, (b_e_type_checker_reflects_typing _ _ _).1 rfl⟩
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  rfl
 
 @[rocq_alias iriswasm.iris_robust_example.module_restrictions_lse]
 theorem module_restrictions_lse : ModuleRestrictions lseModule :=
@@ -425,7 +413,7 @@ theorem RobustAux.zero_mem_i32 (n r : Nat) (mem : Memory)
     n ↦[wmblock] mem ⊢ iprop(∃ c, n ↦[wms][ 0 ] (bits (.int32 c)) : IProp GF) := by
   unfold memBlock memBlockAtPos
   rw [h, ← List.replicate_append_replicate]
-  iintro ⟨Hb, -, -⟩
+  iintro ⟨-, Hb, -, -⟩
   ihave ⟨Hb, -⟩ := BI.BigSepL.bigSepL_append.1 $$ Hb
   iexists 0#32
   have hb : bits (.int32 0#32) = List.replicate 4 (0 : Byte) := by decide
@@ -447,7 +435,7 @@ theorem RobustAux.adv_typing_facts (adv : Module) (htyp : ModuleTyping adv [] ls
   obtain ⟨fts, gts, h⟩ := htyp
   refine ⟨fts, gts, h, ?_⟩
   obtain ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ := adv
-  obtain ⟨hfs, -, -, -, -, -, -, himps, hexps⟩ := h
+  obtain ⟨hfs, -, -, -, -, -, -, himps, -, hexps⟩ := h
   cases himps
   cases hexps with
   | cons he hnil =>
@@ -459,12 +447,13 @@ theorem RobustAux.adv_typing_facts (adv : Module) (htyp : ModuleTyping adv [] ls
   | func fi =>
     obtain ⟨nidx⟩ := fi
     have hft : fts[nidx]? = some (.tf [] []) := by
-      simp [moduleExportTyping, extTFuncs] at he
+      simp [moduleExportTyping, moduleContext, extTFuncs] at he
       split at he <;> simp_all
     obtain ⟨⟨⟨k⟩, locs, body⟩, hmf, hty⟩ := forall2_lookup_r' hfs hft
-    obtain ⟨-, hk, hbe⟩ := hty
-    refine ⟨nm, nidx, _, k, rfl, hmf, rfl, by simpa using hk, ?_⟩
-    simpa [updLocalLabelReturn] using hbe
+    obtain ⟨hk, hbe⟩ := hty
+    change tfs[k]? = _ at hk
+    refine ⟨nm, nidx, _, k, rfl, hmf, rfl, by simp [List.getD_eq_getElem?_getD, hk], ?_⟩
+    simpa [moduleContext, updLocalLabelReturn] using hbe
   | table t => obtain ⟨_⟩ := t; simp [moduleExportTyping] at he
   | mem m => obtain ⟨_⟩ := m; simp [moduleExportTyping] at he
   | global g => obtain ⟨_⟩ := g; simp [moduleExportTyping] at he
@@ -610,14 +599,14 @@ theorem instantiate_lse (advModule : Module) (gRet : Nat) (wret : Value)
   have hs : inst.funcs[1]? = some idnstart := by
     exact of_decide_eq_true Hcs
   subst Hmemeq'
-  rw [show moduleInstBuildMems lseModule inst = [moduleInstMemBaseFunc ⟨1, none⟩] from rfl,
+  rw [show moduleInstBuildMems lseModule inst = [moduleInstMemBaseFunc ⟨.i32, ⟨1, none⟩⟩] from rfl,
     show lseModule.funcs = [⟨.typeidx 0, [], lseExpr 0 0⟩] from rfl]
   unfold moduleInstResourcesMem moduleInstResourcesFunc
   ihave ⟨%n, %xs, %hmem, Hm, -⟩ := BI.BigSepL2.bigSepL2_cons_inv_left.1 $$ Hrm
   have hn : inst.memory[0]? = some n := by
     rw [show getImportMemCount lseModule = 0 from rfl, List.drop_zero] at hmem; simp [hmem]
-  ihave Hm := RobustAux.zero_mem_i32 n 65532 _ 
-    (congrArg (List.replicate · (0 : Byte)) (show pageSize * 1 = 4 + 65532 by decide)) $$ Hm
+  ihave Hm := RobustAux.zero_mem_i32 n 65532 (moduleInstMemBaseFunc ⟨.i32, ⟨1, none⟩⟩)
+    (by rw [moduleInstMemBaseFunc, memMk, MemoryList.data_make]; rfl) $$ Hm
   ihave ⟨%a', %xs', %hfd, Hidn, -⟩ := BI.BigSepL2.bigSepL2_cons_inv_left.1 $$ Hrf
   have ha' : a' = idnstart := by
     rw [show getImportFuncCount lseModule = 1 from rfl] at hfd

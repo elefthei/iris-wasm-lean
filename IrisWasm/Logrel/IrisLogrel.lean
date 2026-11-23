@@ -100,6 +100,7 @@ def interpValueI64 (w : Value) : IProp GF := iprop(⌜∃ z, w = .int64 z⌝)
 def interpValueF32 (w : Value) : IProp GF := iprop(⌜∃ z, w = .float32 z⌝)
 @[rocq_alias iriswasm.interp_value_f64]
 def interpValueF64 (w : Value) : IProp GF := iprop(⌜∃ z, w = .float64 z⌝)
+def interpValueV128 (w : Value) : IProp GF := iprop(⌜∃ z, w = .vec128 z⌝)
 
 @[rocq_alias iriswasm.interp_value]
 def interpValue : ValueType → Value → IProp GF
@@ -107,6 +108,7 @@ def interpValue : ValueType → Value → IProp GF
   | .i64 => interpValueI64
   | .f32 => interpValueF32
   | .f64 => interpValueF64
+  | .v128 => interpValueV128
 
 @[rocq_alias iriswasm.interp_values]
 def interpValues (τs : List ValueType) (v : Val) : IProp GF :=
@@ -234,10 +236,11 @@ def interpTable (tableSize : Nat)
 
 /-! ### Memory relation -/
 
-@[rocq_alias iriswasm.interp_mem]
-def interpMem (n : Nat) : IProp GF :=
+#rocq_ignore iriswasm.interp_mem "the memory invariant records its address width and well-sized extent"
+def interpMem (aw : AddrType) (n : Nat) : IProp GF :=
   NonAtomicInvariant.inv logrelNais (wmN n) iprop(∃ (mem : Memory),
-    ([∗list] k ↦ b ∈ mem.data.data, n ↦[wm][ k ] b) ∗ n ↦[wmlength] lengthMem mem)
+    ⌜WellSized aw (lengthMem mem)⌝ ∗
+    ([∗list] k ↦ b ∈ mem.data.data, n ↦[wm][ k ] b) ∗ n ↦[wmlength] (aw, lengthMem mem))
 
 /-! ### Globals relation -/
 
@@ -251,9 +254,17 @@ def interpGlobal (τg : GlobalType) (n : Nat) : IProp GF :=
   | .mut => NonAtomicInvariant.inv logrelNais (wgN n)
       iprop(∃ w, n ↦[wg] (⟨.mut, w⟩ : Global) ∗ interpValue τg.t w)
 
+/-- The ghost name owns the actual maximum, which an import signature may only bound. -/
+abbrev interpMemLimit (addr : Nat) (required : Option Nat) : IProp GF :=
+  iprop(∃ (actual : Option Nat), ⌜Limits.maxMatches actual required = true⌝ ∗ addr ↪[wmlimit] actual)
+
+def interpTableAt (τt : TableType) (icl : Nat → FunctionType → FunctionClosure → IProp GF)
+    (a : Nat) : IProp GF :=
+  iprop(∃ (sz : Nat) (lim : Option Nat), ⌜Limits.maxMatches lim τt.limits.max = true⌝ ∗
+    a ↪[wtlimit] lim ∗ a ↪[wtsize] sz ∗ interpTable sz icl a)
+
 /-! ### Instance relation -/
 
-@[rocq_alias iriswasm.interp_instance']
 def interpInstance' (τctx : TContext)
     (interpClosure' interpClosure'' : Nat → FunctionType → FunctionClosure → IProp GF)
     (i : Instance) : IProp GF :=
@@ -263,21 +274,9 @@ def interpInstance' (τctx : TContext)
     -- Function declarations
     ([∗list] kf;tf ∈ i.funcs;τctx.funcT, interpFunction tf interpClosure' kf) ∗
     -- Function tables
-    (match τctx.table[0]? with
-     | some τt => match i.tab[0]? with
-       | some a => ∃ (tableSize : Nat) (tableLim : Option Nat),
-           ⌜tableLim.isSome.toNat ≤ τt.limits.max.isSome.toNat⌝ ∗
-           a ↪[wtlimit] tableLim ∗
-           a ↪[wtsize] tableSize ∗
-           interpTable tableSize interpClosure'' a
-       | none => False
-     | none => True) ∗
+    ([∗list] a;τt ∈ i.tab;τctx.table, interpTableAt τt interpClosure'' a) ∗
     -- Linear memory
-    (match τctx.memory[0]? with
-     | some τm => match i.memory[0]? with
-       | some a => a ↪[wmlimit] τm.max ∗ interpMem a
-       | none => False
-     | none => True) ∗
+    ([∗list] a;τm ∈ i.memory;τctx.memory, interpMemLimit a τm.limits.max ∗ interpMem τm.address a) ∗
     -- Global declarations
     ([∗list] kg;gt ∈ i.globs;τctx.global, interpGlobal gt kg))
 
@@ -285,6 +284,21 @@ def interpInstance' (τctx : TContext)
 def interpInstance (τctx : TContext) (hostList : List (Hostfuncidx × FunctionType))
     (i : Instance) : IProp GF :=
   interpInstance' τctx (fun _ => interpClosure hostList) (fun _ => interpClosure hostList) i
+
+theorem interp_frame_types {C : TContext} {hl : List (Hostfuncidx × FunctionType)}
+    {i : Instance} {f : Frame} :
+    ⊢ interpInstance (GF := GF) C hl i -∗ interpFrame C.local_ i f -∗
+      ⌜f.inst.types = C.typesT⌝ ∗ interpFrame C.local_ i f := by
+  iintro Hi Hf
+  iunfold interpInstance, interpInstance' at Hi
+  icases Hi with ⟨%Ht, -⟩
+  iunfold interpFrame at Hf
+  icases Hf with ⟨%vs, %Heq, Hrest⟩
+  isplitr
+  · ipureintro; rw [Heq]; exact Ht
+  iunfold interpFrame; iexists vs
+  isplitr; · ipureintro; exact Heq
+  iexact Hrest
 
 @[rocq_alias iriswasm.interp_function_persistent]
 instance interpFunction_persistent (τf : FunctionType) (n : Nat)
@@ -308,20 +322,25 @@ private instance interpTableEntry_persistent (τf : FunctionType) (n m : Nat)
     cases fe <;> dsimp only <;> infer_instance
   infer_instance
 
+instance interpTableAt_persistent (τt : TableType) (a : Nat)
+    (icl : Nat → FunctionType → FunctionClosure → IProp GF)
+    [∀ n tf cl, Persistent (icl n tf cl)] : Persistent (interpTableAt τt icl a) := by
+  unfold interpTableAt interpTable
+  infer_instance
+
 @[rocq_alias iriswasm.interp_instance_persistent']
 instance interpInstance_persistent' (τctx : TContext) (i : Instance)
     (icl icl' : Nat → FunctionType → FunctionClosure → IProp GF)
     [∀ n τf cl, Persistent (icl n τf cl)] [∀ n τf cl, Persistent (icl' n τf cl)] :
     Persistent (interpInstance' τctx icl icl' i) := by
-  unfold interpInstance' interpTable interpMem
-  cases τctx.table[0]? <;> cases i.tab[0]? <;> cases τctx.memory[0]? <;> cases i.memory[0]? <;>
-    dsimp only <;> infer_instance
+  unfold interpInstance' interpMem
+  infer_instance
 
 @[rocq_alias iriswasm.interp_value_persistent]
 instance interpValue_persistent (τ : ValueType) (vs : Value) :
     Persistent (interpValue (GF := GF) τ vs) := by
-  cases τ <;> unfold interpValue interpValueI32 interpValueI64 interpValueF32 interpValueF64 <;>
-    infer_instance
+  cases τ <;> unfold interpValue interpValueI32 interpValueI64 interpValueF32 interpValueF64
+    interpValueV128 <;> infer_instance
 
 @[rocq_alias iriswasm.interp_val_persistent]
 instance interpVal_persistent (τr : List ValueType) (vs : Val) :

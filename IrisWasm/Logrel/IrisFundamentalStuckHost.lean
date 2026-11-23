@@ -26,16 +26,6 @@ theorem typing_local_stuck_host (C : TContext) (es : List BasicInstruction)
   isplit
   · ipureintro; exact hnil
   iintro %i #Hi %f %vs Hf Hown #Hv
-  have hnv : toVal ([.local τ2.length ⟨vs, i⟩ [.label τ2.length [] (toEList es)]] : Expr) = none := by
-    rcases hv : toVal ([.local τ2.length ⟨vs, i⟩ [.label τ2.length [] (toEList es)]] : Expr) with
-      _ | v
-    · rfl
-    obtain ⟨tf, h, w, vh, rfl⟩ := to_val_local_inv _ _ _ _ hv
-    obtain ⟨LI, hLI, hLIv⟩ := to_val_call_host_rec_local _ [] _ _ _ [] _ _ _ hv
-    simp [vToEList] at hLI
-    subst hLI
-    obtain ⟨vh', -, hvh'⟩ := to_val_call_host_label_inv _ _ _ _ _ _ _ hLIv
-    exact (to_es_list_llfill_contr _ _ _ _ _ hvh').elim
   have Ht := be_fundamental _ _ _ htyping
   dsimp only [semanticTyping, updLocalLabelReturn] at Ht
   iunfold interpExpressionClosureStuckHost
@@ -69,7 +59,7 @@ theorem typing_local_stuck_host (C : TContext) (es : List BasicInstruction)
   ihave H : wpWasmFrame .NotStuck ⊤ [.label τ2.length [] (toEList es)]
       (fun w => iprop((interpVal τ2 w ∨ interpCallHostCls hl τ2 w) ∗ ↪[frame] f ∗
         NonAtomicInvariant.own (LogrelNaInvs.logrelNais GF) ⊤)) τ2.length ⟨vs, i⟩ $$ [Hf Hown]
-  · iapply wp_frame_bind .NotStuck ⊤ _ τ2.length ⟨vs, i⟩ f _ hnv $$ Hf
+  · iapply wp_frame_bind .NotStuck ⊤ _ τ2.length ⟨vs, i⟩ f _ (toVal_native_frame_none ..) $$ Hf
     iintro Hf
     ihave Hb := Ht $$ %i %(.rec_ [] τ2.length [] (.base [] []) []) %hl Hi' Hctx %⟨vs, i⟩ %(.immV [])
       [Hf Hown] []

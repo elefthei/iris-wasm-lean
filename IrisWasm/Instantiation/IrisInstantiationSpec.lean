@@ -25,20 +25,19 @@ private theorem map_seq_set {V : Type} (N j : Nat) (l : List V) (v : V) (hj : j 
 private theorem updateTab_eq {t t' : Tableinst} {off : Nat} {pay : List Funcelem}
     (h : updateTab t off pay = some t') : t' = tableInitReplaceSingle t off pay := by
   unfold updateTab at h
-  by_cases hle : off + pay.length ≤ t.data.length
-  · simp only [hle, ↓reduceIte, Option.some.injEq] at h; subst h
-    simp only [tableInitReplaceSingle, Tableinst.mk.injEq, and_true]
-    exact (List.take_of_length_le (by simp; omega)).symm
-  · simp [hle] at h
+  split at h
+  · rename_i hle
+    cases h
+    simp only [tableInitReplaceSingle, List.take_of_length_le (by omega : pay.length ≤ t.entries.size - off)]
+  · cases h
 
 private theorem updateMem_eq {t t' : Memory} {off : Nat} {pay : List Byte}
     (h : updateMem t off pay = some t') : t' = memInitReplaceSingle t off pay := by
-  unfold updateMem at h; dsimp only at h
-  by_cases hle : off + pay.length ≤ t.data.data.length
-  · simp only [hle, ↓reduceIte, Option.some.injEq] at h; subst h
-    simp only [memInitReplaceSingle, Memory.mk.injEq, MemoryList.mk.injEq, and_true]
-    exact (List.take_of_length_le (by simp; omega)).symm
-  · simp [hle] at h
+  unfold updateMem at h
+  split at h
+  · cases h
+    simp only [memInitReplaceSingle, List.take_of_length_le (by omega : pay.length ≤ lengthMem t - off)]
+  · cases h
 
 private def buildTabsStep (m : Module) (inst : Instance) (tabs : List Tableinst)
     (e : ModuleElement) : List Tableinst :=
@@ -207,8 +206,10 @@ private def buildMemsStep (m : Module) (_inst : Instance) (mems : List Memory)
   | .memidx k =>
     if k < itc then mems else
       match mems[k - itc]? with
-      | some t => mems.set (k - itc)
-          (memInitReplaceSingle t (assertConst1I32ToNat e.offset) e.init)
+      | some t =>
+        match literalDataOffset e.offset with
+        | some off => mems.set (k - itc) (memInitReplaceSingle t off e.init)
+        | none => mems
       | none => mems
 
 private theorem buildMems_eq (m : Module) (inst : Instance) :
@@ -219,7 +220,7 @@ private theorem upd_alloc_mems (m : Module) (inst : Instance) (N : Nat)
     (hinst : ∀ k a, inst.memory[k]? = some a →
       if k < getImportMemCount m then a < N else a = N + (k - getImportMemCount m))
     (offs : List Nat) (elems : List ModuleData)
-    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => assertConst1I32ToNat e.offset = off)
+    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => literalDataOffset e.offset = some off)
       offs elems) :
     ∀ (mems : List Memory) (w : NatMap Memory),
     updateWmsPartial (FiniteMap.map_seq N mems) inst offs elems = some w →
@@ -269,9 +270,10 @@ private def importMemsStep (m : Module) (inst : Instance) (wms : NatMap Memory)
       match inst.memory[k]? with
       | some mAddr =>
         match get? wms mAddr with
-        | some t => insert wms mAddr
-            (memInitReplaceSingle t (assertConst1I32ToNat e.offset)
-              e.init)
+        | some t =>
+          match literalDataOffset e.offset with
+          | some off => insert wms mAddr (memInitReplaceSingle t off e.init)
+          | none => wms
         | none => wms
       | none => wms
     else wms
@@ -283,7 +285,7 @@ private theorem upd_imp_mems (m : Module) (inst : Instance) (N : Nat)
     (hinst : ∀ k a, inst.memory[k]? = some a →
       if k < getImportMemCount m then a < N else a = N + (k - getImportMemCount m))
     (offs : List Nat) (elems : List ModuleData)
-    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => assertConst1I32ToNat e.offset = off)
+    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => literalDataOffset e.offset = some off)
       offs elems) :
     ∀ (wms w : NatMap Memory), (∀ a, (get? wms a).isSome → a < N) →
     updateWmsPartial wms inst offs elems = some w →
@@ -328,7 +330,7 @@ private theorem mems_split (m : Module) (inst : Instance) (N : Nat)
     (hinst : ∀ k a, inst.memory[k]? = some a →
       if k < getImportMemCount m then a < N else a = N + (k - getImportMemCount m))
     (offs : List Nat) (elems : List ModuleData)
-    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => assertConst1I32ToNat e.offset = off)
+    (hoff : Wasm.List.Forall₂ (fun off (e : ModuleData) => literalDataOffset e.offset = some off)
       offs elems)
     (wms : NatMap Memory) (nt : List Memory) (hdom : ∀ a, (get? wms a).isSome → a < N)
     (wms' : NatMap Memory)
@@ -351,19 +353,21 @@ private theorem mems_split (m : Module) (inst : Instance) (N : Nat)
   subst e1 e2
   refine ⟨rfl, hs, disj_map_seq N _ _ fun a ha => hdom a ((d1 a).2 ha)⟩
 
-private theorem offs_of_restr {X : Type} (get : X → Wasm.Expr) (s : StoreRecord) (inst : Instance) :
-    ∀ (xs : List X) (cs vs : List I32),
-    xs.map get = vs.map (fun v => [BasicInstruction.const (.int32 v)]) →
+private theorem offs_of_restr {X A : Type} (get : X → Wasm.Expr)
+    (value : A → Value) (unsigned : A → Nat) (R : Nat → X → Prop)
+    (hlit : ∀ a x, get x = [.const (value a)] → R (unsigned a) x)
+    (s : StoreRecord) (inst : Instance) :
+    ∀ (xs : List X) (cs vs : List A),
+    xs.map get = vs.map (fun v => [BasicInstruction.const (value v)]) →
     Wasm.List.Forall₂ (fun x c => ReduceTrans (s, ⟨[], inst⟩, toEList (get x))
-      (s, ⟨[], inst⟩, [.basic (.const (.int32 c))])) xs cs →
-    Wasm.List.Forall₂ (fun off x => assertConst1I32ToNat (get x) = off) (cs.map (·.toNat)) xs
+      (s, ⟨[], inst⟩, [.basic (.const (value c))])) xs cs →
+    Wasm.List.Forall₂ R (cs.map unsigned) xs
   | [], [], _, _, _ => .nil
   | x :: xs, c :: cs, v :: vs, hr, .cons h1 h2 => by
     simp only [List.map_cons, List.cons.injEq] at hr
-    refine .cons ?_ (offs_of_restr get s inst xs cs vs hr.2 h2)
+    refine .cons (hlit c x ?_) (offs_of_restr get value unsigned R hlit s inst xs cs vs hr.2 h2)
     rw [hr.1] at h1 ⊢
-    cases reduce_trans_const h1
-    rfl
+    rw [reduce_trans_const h1]
   | _ :: _, _ :: _, [], hr, _ => by simp at hr
   | [], _ :: _, _, _, h => by cases h
   | _ :: _, [], _, _, h => by cases h
@@ -396,7 +400,7 @@ private theorem glob_init_value {gs : List ModuleGlob} {vs : List Value}
     exact those_app [_] _ [_] _ (by simp [assertConst1, h1]; rfl) ih
 
 private theorem glob_init_types {c : TContext} {gs : List ModuleGlob} {gts : List GlobalType}
-    (ht : Wasm.List.Forall₂ (ModuleGlobTyping c) gs gts) :
+    (ht : ModuleGlobalsTyping c gs gts) :
     ∀ {vs : List Value},
     Wasm.List.Forall₂ (fun (g : ModuleGlob) v => g.init = [BasicInstruction.const v]) gs vs →
     vs.map typeof = gs.map (·.type.t) := by
@@ -443,7 +447,7 @@ private theorem tabs_bound (inst : Instance) (stabs nt : List Tableinst) (wts : 
       | none => false
       | some i => match (stabs ++ nt)[i]? with
         | none => false
-        | some ti => decide (nOfInt eOff + e.init.length ≤ ti.data.length)) eOffs elems = true) :
+        | some ti => decide (nOfInt eOff + e.init.length ≤ ti.entries.size)) eOffs elems = true) :
     wtsBoundCheck (wts ∪ FiniteMap.map_seq stabs.length nt) inst (eOffs.map (·.toNat)) elems =
       true := by
   unfold wtsBoundCheck
@@ -473,17 +477,17 @@ private theorem tabs_bound (inst : Instance) (stabs nt : List Tableinst) (wts : 
 private theorem mems_bound (inst : Instance) (smems nm : List Memory) (wms : NatMap Memory)
     (hsub : ∀ a t, get? wms a = some t → smems[a]? = some t)
     (hcover : ∀ (k a : Nat), inst.memory[k]? = some a → (get? wms a).isSome ∨ smems.length ≤ a)
-    (dOffs : List I32) (datas : List ModuleData)
-    (hcb : Wasm.List.all2 (fun dOff (d : ModuleData) =>
+    (dOffs : List AddressOperand) (datas : List ModuleData)
+    (hcb : Wasm.List.all2 (fun (dOff : AddressOperand) (d : ModuleData) =>
       match inst.memory[match d.data with | .memidx i => i]? with
       | none => false
       | some i => match (smems ++ nm)[i]? with
         | none => false
-        | some mem => decide (nOfInt dOff + d.init.length ≤ lengthMem mem)) dOffs datas = true) :
-    wmsBoundCheck (wms ∪ FiniteMap.map_seq smems.length nm) inst (dOffs.map (·.toNat)) datas =
-      true := by
+        | some mem => decide (dOff.unsigned + d.init.length ≤ lengthMem mem)) dOffs datas = true) :
+    wmsBoundCheck (wms ∪ FiniteMap.map_seq smems.length nm) inst
+      (dOffs.map AddressOperand.unsigned) datas = true := by
   unfold wmsBoundCheck
-  refine all2_map_mono (·.toNat) _ _ ?_ _ _ hcb
+  refine all2_map_mono AddressOperand.unsigned _ _ ?_ _ _ hcb
   intro dOff d h
   rcases d with ⟨⟨k⟩, o, ini⟩
   dsimp only at h ⊢
@@ -504,7 +508,7 @@ private theorem mems_bound (inst : Instance) (smems nm : List Memory) (wms : Nat
       rw [List.getElem?_append_left (List.getElem?_eq_some_iff.1 h1).1, h1] at hs
       cases hs; rfl
   rw [key]
-  simpa [nOfInt] using of_decide_eq_true h
+  exact h
 
 private theorem layout {l ext : List Nat} {N len : Nat} (hl : l = ext ++ genIndex N len)
     (hext : ∀ a ∈ ext, a < N) :
@@ -584,7 +588,7 @@ private theorem buildMems_length (m : Module) (inst : Instance) :
   dsimp only
   split
   · exact hx
-  · split <;> simp [hx]
+  · split <;> (try split) <;> simp [hx]
 
 private theorem keep4 {P1 P2 P3 P4 : IProp GF} {φ : Prop} (h : ⊢ P1 -∗ P2 -∗ P3 -∗ P4 -∗ ⌜φ⌝) :
     ⊢ P1 -∗ P2 -∗ P3 -∗ P4 -∗ ⌜φ⌝ ∗ P1 ∗ P2 ∗ P3 ∗ P4 := by
@@ -628,7 +632,7 @@ private theorem mem_imports {v_imps : List ModuleExport} {t_imps : List ExternT}
       v_imps[k]? = some v → t_imps[k]? = some t →
       match v.desc with
       | .mem (.memidx i) => ∃ mem mt,
-          smems[i]? = some { data := { data := mem.data.data }, maxOpt := mem.maxOpt } ∧
+          smems[i]? = some mem ∧
           get? wms i = some mem ∧ t = .mem mt ∧ memTyping mem mt = true
       | _ => True)
     (hdc : memDomcheck v_imps wms) :
@@ -666,8 +670,12 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
   obtain ⟨⟨gvs, hrg⟩, ⟨evs, hre⟩, ⟨dvs, hrd⟩⟩ := hmr
   have hglen : g_inits.length = m.globals.length := (Wasm.List.Forall₂.length_eq hglob).symm
   have hginit := globs_of_restr _ _ _ _ _ hrg hglob
-  have heoff := offs_of_restr (fun e : ModuleElement => e.offset) _ _ _ _ _ hre helem
-  have hdoff := offs_of_restr (fun d : ModuleData => d.offset) _ _ _ _ _ hrd hdata
+  have heoff := offs_of_restr ModuleElement.offset Value.int32 BitVec.toNat
+    (fun off e => assertConst1I32ToNat e.offset = off)
+    (fun _ _ h => by simp [h, assertConst1I32ToNat, assertConst1I32, natOfInt]) _ _ _ _ _ hre helem
+  have hdoff := offs_of_restr ModuleData.offset AddressOperand.value AddressOperand.unsigned
+    (fun off d => literalDataOffset d.offset = some off)
+    (fun _ _ h => by simp [h, literalDataOffset]) _ _ _ _ _ hrd hdata
   have hgval : ModuleGlobInitValues m g_inits := by
     refine ⟨?_, glob_init_value hginit⟩
     obtain ⟨fts, gts, hmt⟩ := hmt
@@ -684,7 +692,7 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
   rcases rm with ⟨sM, idm⟩
   generalize hg : allocGlobs sM m.globals g_inits = rg at halloc
   rcases rg with ⟨sG, idg⟩
-  simp only [Bool.and_eq_true, decide_eq_true_eq] at halloc hs'
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at halloc
   obtain ⟨⟨⟨⟨⟨⟨rfl, hty⟩, hfu⟩, hta⟩, hme⟩, hgl⟩, hex⟩ := halloc
   obtain ⟨af1, af2, af3, af4, af5⟩ := alloc_func_gen_index hf
   obtain ⟨at1, at2, at3, at4, at5⟩ := alloc_tab_gen_index ht
@@ -696,7 +704,8 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
   have htabs : s1.tables = s.tables ++ moduleInstTableBase m.tables := by
     rw [← ag4, ← am4, at2, ← af3, List.map_map]; rfl
   have hmems : s1.mems = s.mems ++ moduleInstMemBase m.mems := by
-    rw [← ag5, am2, ← at4, ← af4]; rfl
+    change s1.mems = s.mems ++ m.mems.map memMk
+    rw [← ag5, am2, ← at4, ← af4]
   have hglobs : s1.globals =
       s.globals ++ moduleInstGlobalInit (moduleInstBuildGlobals m.globals) g_inits := by
     rw [ag2, ← am5, ← at5, ← af5, global_init_eq _ _ hglen]
@@ -722,7 +731,7 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
     simp [extGlobAddrs, higc, hvgc]
   generalize hs'' : initTabs s1 inst (e_offs.map (·.toNat)) m.elem = s'' at hs'
   obtain ⟨hp1, hp2, hp3⟩ := init_tabs_preserve hs''
-  obtain ⟨hq1, hq2, hq3⟩ := init_mems_preserve hs'.symm
+  obtain ⟨hq1, hq2, hq3⟩ := init_mems_preserve hs'
   unfold instantiationResourcesPreWasm importResourcesWasmTypecheck genHeapWasmStore
   iintro ⟨Himp, %Hebound, %Hdbound⟩ Hσ
   icases Hσ with ⟨Hwf, Hwt, Hwm, Hwg, Hmsize, Htsize, Hmlimit, Htlimit⟩
@@ -738,7 +747,11 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
   -- allocation
   imod alloc_func_state_update _ _ _ hfuncs $$ Hwf with ⟨Hwf, Hfm⟩
   imod alloc_tab_state_update _ _ _ htabs $$ Hwt Htsize Htlimit with ⟨Hwt, Htsize, Htlimit, Htm⟩
-  imod alloc_mem_state_update _ _ _ hmems $$ Hwm Hmsize Hmlimit with ⟨Hwm, Hmsize, Hmlimit, Hmm⟩
+  have hmemvalid : ∀ mt ∈ m.mems, moduleMemTyping mt = true := by
+    obtain ⟨_, _, fields⟩ := hmt
+    exact List.all_eq_true.mp fields.2.2.1
+  imod alloc_mem_state_update _ _ _ hmems (moduleInstMemBase_agree hmemvalid)
+    $$ Hwm Hmsize Hmlimit with ⟨Hwm, Hmsize, Hmlimit, Hmm⟩
   imod alloc_glob_state_update _ _ _ hglobs $$ Hwg with ⟨Hwg, Hgm⟩
   -- tables
   obtain ⟨hsubT, hextT, hdomT⟩ := tab_imports Htl htc.2
@@ -796,7 +809,7 @@ theorem instantiation_wasm_spec (v_imps : List ModuleExport) (m : Module) (t_imp
     isplitl [Hwms]
     · iexact Hwms
     · iapply bigSepM_map_seq.2; iexact Hmm
-  have L := init_mems_state_update (GF := GF) s'' s' inst _ _ _ _ _ rfl hs'.symm hboundM hupdM
+  have L := init_mems_state_update (GF := GF) s'' s' inst _ _ _ _ _ rfl hs' hboundM hupdM
   rw [← hp2] at L
   imod L $$ Hwm Hmsize Hmlimit Hallm with ⟨Hwm, Hmsize, Hmlimit, Hallm⟩
   subst hwms'

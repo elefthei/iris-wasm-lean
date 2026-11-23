@@ -22,7 +22,7 @@ the stack is empty, 0 otherwise. -/
 def isEmptyOp : List BasicInstruction :=
   [ .getLocal 0,
     .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .relop .i32 (.i .eq) ]
 
 @[rocq_alias iriswasm.is_empty]
@@ -115,7 +115,7 @@ theorem spec_is_empty_op (f0 : Frame) (n v : Nat) (s : List I32) (E : CoPset) :
   simp only [ofVal, vToEList, List.map, List.cons_append, List.nil_append]
   obtain ⟨k, hk, hks⟩ := eq_top v s.length Hlens
   iapply wp_wand_s $$ [Hf]
-  · iapply wp_relop (Φ := fun w => iprop(⌜w = .immV [valueOfInt k]⌝)) rfl $$ Hf
+  · iapply wp_relop (Φ := fun w => iprop(⌜w = .immV [valueOfInt k]⌝)) rfl rfl .i32Agree rfl $$ Hf
     inext; ipureintro; rw [hk]
   iintro %w ⟨%hw, Hf⟩
   iapply HΦ
@@ -178,7 +178,7 @@ instance stackModuleInv_timeless (P : Nat → List I32 → IProp GF) (Q : Nat �
 /-- Lean helper: `c; if [] [unreachable] []` with `c ≠ 0` traps, whatever follows. -/
 theorem wp_if_unreachable_trap (c : I32) (hc : c ≠ Wasm.Int.zero) (f : Frame) (es : Expr) :
     ⊢ (↪[frame] f -∗ WP ([.basic (.const (.int32 c)),
-        .basic (.if_ (.tf [] []) [.unreachable] [])] ++ es : Expr)
+        .basic (.if_ (.result none) [.unreachable] [])] ++ es : Expr)
       {{ w, ⌜w = .trapV⌝ ∗ ↪[frame] f }} : IProp GF) := by
   iintro Hf
   iapply wp_seq_trap _ _ _ _ f f
@@ -186,13 +186,13 @@ theorem wp_if_unreachable_trap (c : I32) (hc : c ≠ Wasm.Int.zero) (f : Frame) 
   iintro Hf
   iapply wp_if_true hc $$ Hf
   iintro !> Hf
-  rw [show ([.basic (.block (.tf [] []) [.unreachable])] : Expr) =
-    [] ++ [.basic (.block (.tf [] []) [.unreachable])] from rfl]
-  iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+  rw [show ([.basic (.block (.result none) [.unreachable])] : Expr) =
+    [] ++ [.basic (.block (.result none) [.unreachable])] from rfl]
+  iapply wp_block (bt := .result none) (vs := []) (m := 0) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply wp_wand_s (Φ := fun w => iprop(⌜w = .trapV⌝ ∗ ↪[frame] f)) $$ [Hf]
-  · rw [show ([.label ([] : List ValueType).length [] ([] ++ toEList [.unreachable])] : Expr) =
-      [] ++ [.label 0 [] [.basic .unreachable]] ++ [] from rfl]
+  · rw [show ([.label 0 [] ([] ++ toEList [.unreachable])] : Expr) =
+        [] ++ [.label 0 [] [.basic .unreachable]] ++ [] from rfl]
     iapply IrisRulesTrap.wp_label_trap _ _ _ [] _ _ [] _ _ rfl $$ Hf
     iintro Hf
     iapply wp_unreachable (Φ := fun w => iprop(⌜w = .trapV⌝)) $$ Hf
@@ -275,7 +275,7 @@ theorem stack_valid_prefix (m : Nat) (i0 : Instance) (hm : i0.memory[0]? = some 
       ⊢ ({{{{ isStack v' stk m ∗ ↪[frame] (⟨locs, i0⟩ : Frame) }}}} (toEList op)
         {{{{ w, interpVal tf2s w ∗ (∃ stk', isStack v' stk' m) ∗ ∃ f1, ↪[frame] f1 }}}} : IProp GF)) :
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       NonAtomicInvariant.own (LogrelNaInvs.logrelNais (GF := GF)) ⊤ -∗ ↪[frame] f -∗
       WP (toEList (validateStack 0 ++ validateStackBound 0 ++ op)) FRAME tf2s.length ;
         (⟨locs, i0⟩ : Frame) CTX 1 ; (Lholed.rec_ [] tf2s.length [] (.base [] []) [])
@@ -399,7 +399,7 @@ theorem stack_valid_prefix (m : Nat) (i0 : Instance) (hm : i0.memory[0]? = some 
     ihave H2 := H $$ %LI %hLI
     iexact H2
   · iapply wp_wand_s $$ [Hlen Hf]
-    · iapply fail_stack_bound_valid v m ⟨locs, i0⟩ ⊤ 0 l (toEList op)
+    · iapply fail_stack_bound_valid (aw := .i32) v m ⟨locs, i0⟩ ⊤ 0 l (toEList op)
       iframe; ipureintro; exact ⟨hm, hl0, by omega⟩
     iintro %w ⟨%hw, Hlen, Hf⟩
     subst hw
@@ -424,7 +424,7 @@ theorem stack_valid_unary (m : Nat) (i0 : Instance) (hm : i0.memory[0]? = some m
         ↪[frame] (⟨[valueOfUint v] ++ nZeros tlocs, i0⟩ : Frame) }}}} (toEList op)
         {{{{ w, interpVal [.i32] w ∗ (∃ stk', isStack v stk' m) ∗ ∃ f1, ↪[frame] f1 }}}} : IProp GF)) :
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32] [.i32] tlocs
         (toEList (validateStack 0 ++ validateStackBound 0 ++ op)) [] : IProp GF) := by
   unfold interpClosureNative
@@ -463,13 +463,13 @@ theorem interpVal_i32 (c : Value) (h : ∃ z, c = .int32 z) :
   iapply BigSepL2.bigSepL2_nil.2
   iempintro
 
-@[rocq_alias iriswasm.valid_is_empty]
+#rocq_ignore iriswasm.valid_is_empty "The stack invariant owns memory32 metadata"
 theorem valid_is_empty (m t : Nat) (funcs : List Funcaddr) :
     let i0 : Instance :=
       { types := [.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], funcs := funcs,
         tab := [t], memory := [m], globs := [] };
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32] [.i32] [] (toEList isEmpty) [] : IProp GF) := by
   intro i0
   refine stack_valid_unary m i0 rfl [] isEmptyOp ?_

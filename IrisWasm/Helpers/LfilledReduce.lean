@@ -92,8 +92,7 @@ private theorem label_inv {s f s' f' n es LI R} :
       | lfilledRec _ _ _ _ _ _ _ l' _ hl' =>
         exact .inl ⟨l', .label _ _ k' lh' hr ((lfilled_Ind_Equivalent _ _ _ _).2 hl)
           ((lfilled_Ind_Equivalent _ _ _ _).2 hl'), by simp⟩
-  | invokeNative => have := congrArg List.getLast? hE; simp at this
-  | invokeHost => have := congrArg List.getLast? hE; simp at this
+  | block | loop | invokeNative | invokeHost => have := congrArg List.getLast? hE; simp at this
   | _ => simp at hE
 
 private theorem singleton_core {e : AdministrativeInstruction}

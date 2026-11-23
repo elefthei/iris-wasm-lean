@@ -1174,4 +1174,50 @@ theorem to_val_local_none_none (n : Nat) (f : Frame) (e : List AdministrativeIns
     toVal e = none → toVal [.local n f e] = none := by
   intro h; rw [toVal_singleton, toValInstr_local, h]; rfl
 
+/-- Some element of `llfill vh [e]` is `e` itself or a `label`/`local` (not in Coq). -/
+theorem llfill_mem_witness (vh : Llholed) (e : AdministrativeInstruction) :
+    ∃ a ∈ llfill vh [e], a = e ∨ (∃ n es LI, a = .label n es LI) ∨
+      (∃ n f LI, a = .local n f LI) := by
+  cases vh with
+  | base => exact ⟨e, by simp [llfill], .inl rfl⟩
+  | label b n es lh a =>
+    exact ⟨.label n es (llfill lh [e]), by simp [llfill], .inr (.inl ⟨_, _, _, rfl⟩)⟩
+  | «local» b n f lh a =>
+    exact ⟨.local n f (llfill lh [e]), by simp [llfill], .inr (.inr ⟨_, _, _, rfl⟩)⟩
+
+@[rocq_alias iriswasm.to_val_call_host_label_inv]
+theorem to_val_call_host_label_inv (n : Nat) (es1 es : List AdministrativeInstruction)
+    (tf : FunctionType) (h : Hostfuncidx) (w : List Value) (vh : Llholed) :
+    toVal [.label n es1 es] = some (.callHostV tf h w vh) →
+    ∃ vh', vh = .label [] n es1 vh' [] ∧ es = llfill vh' [.callHost tf h w] := by
+  intro hh
+  rcases toVal_label_some hh with ⟨_, vh0, hL⟩ | ⟨sh, hL⟩ | ⟨tf', h', w', vh', hL⟩ <;>
+    rw [toVal_singleton, toValInstr_label, hL] at hh
+  · rcases hd : vhDecrease (ValidHoled.rec_ [] n es1 vh0 []) with _ | x <;>
+      simp [hd, valOfValNotVal] at hh
+  · simp [valOfValNotVal] at hh
+  simp [valOfValNotVal] at hh
+  obtain ⟨rfl, rfl, rfl, rfl⟩ := hh
+  exact ⟨vh', rfl, (of_to_val _ _ hL).symm⟩
+
+@[rocq_alias iriswasm.to_es_list_llfill_contr]
+theorem to_es_list_llfill_contr (es : List BasicInstruction) (vh' : Llholed) (tf : FunctionType)
+    (h : Hostfuncidx) (w : List Value) :
+    toEList es = llfill vh' [.callHost tf h w] → False := by
+  intro heq
+  obtain ⟨a, ha, hor⟩ := llfill_mem_witness vh' (.callHost tf h w)
+  rw [← heq] at ha
+  simp [toEList] at ha
+  obtain ⟨x, -, rfl⟩ := ha
+  rcases hor with h | ⟨_, _, _, h⟩ | ⟨_, _, _, h⟩ <;> cases h
+
+/-- A freshly entered native frame contains source code, not a suspended host call. -/
+theorem toVal_native_frame_none (m : Nat) (f : Frame) (es : List BasicInstruction) :
+    toVal [.local m f [.label m [] (toEList es)]] = none := by
+  rcases hv : toVal [.local m f [.label m [] (toEList es)]] with _ | v
+  · rfl
+  obtain ⟨tf, h, ws, vh, hv'⟩ := toVal_local_some hv
+  obtain ⟨vh', _, heq⟩ := to_val_call_host_label_inv _ _ _ _ _ _ _ hv'
+  exact (to_es_list_llfill_contr _ _ _ _ _ heq).elim
+
 end IrisWasm

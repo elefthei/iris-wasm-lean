@@ -24,7 +24,7 @@ def isFullOp : List BasicInstruction :=
   [ i32const 1,
     i32const 0,
     .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     i32const 65536,
     .binop .i32 (.i (.rem .u)),
     i32const 65532,
@@ -132,7 +132,7 @@ theorem spec_is_full_op (f0 : Frame) (n v : Nat) (s : List I32) (E : CoPset) :
     · iintro !> ⟨%h, -⟩; cases h
     iapply wp_binop (Φ := fun w => iprop(⌜valCombine (.immV [c1, c0]) w =
       .immV [c1, c0, valueOfUint (s.length * 4)]⌝))
-      (rem_uint (v + s.length * 4)) $$ Hf
+      rfl rfl .i32Agree (rem_uint (v + s.length * 4)) $$ Hf
     inext; ipureintro; rw [hmod]; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -149,7 +149,7 @@ theorem spec_is_full_op (f0 : Frame) (n v : Nat) (s : List I32) (E : CoPset) :
     · iintro !> ⟨%h, -⟩; cases h
     iapply wp_relop (Φ := fun w => iprop(⌜valCombine (.immV [c1, c0]) w =
       .immV [c1, c0, .int32 (wasmBool (decide (s.length * 4 = 65532)))]⌝))
-      (eq_65532 _ hlt) $$ Hf
+      rfl rfl .i32Agree (eq_65532 _ hlt) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -215,13 +215,13 @@ section valid
 variable [LogrelNaInvs GF]
 attribute [local instance] WasmG.invGS
 
-@[rocq_alias iriswasm.valid_is_full]
+#rocq_ignore iriswasm.valid_is_full "The stack invariant owns memory32 metadata"
 theorem valid_is_full (m t : Nat) (funcs : List Funcaddr) :
     let i0 : Instance :=
       { types := [.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], funcs := funcs,
         tab := [t], memory := [m], globs := [] };
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32] [.i32] [] (toEList isFull) [] : IProp GF) := by
   intro i0
   refine stack_valid_unary m i0 rfl [] isFullOp ?_

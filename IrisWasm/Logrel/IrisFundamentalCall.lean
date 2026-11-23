@@ -86,24 +86,14 @@ theorem FundAux.invoke_closure (C : TContext) (j : Instance) (hl : List (Hostfun
     imod Hcls $$ [Hcl0 Hown] with Hown
     · iframe
     imodintro
-    ihave H : wpWasmCtxFrame .NotStuck ⊤ [.basic (.block (.tf [] tf2) e)]
-        (fun v => iprop((interpVal tf2 v ∨ interpCallHostCls hl tf2 v) ∗
-          NonAtomicInvariant.own (LogrelNaInvs.logrelNais GF) ⊤ ∗ ↪[frame] ⟨locs, j⟩))
-        tf2.length ⟨ws ++ nZeros tlocs, i'⟩ 0 (.base [] []) $$ [Hf Hown]
-    · rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] tf2) e)]]
-      iapply wp_block_local_ctx (vs := []) (t1s := []) rfl rfl rfl rfl $$ Hf
-      inext
-      iintro Hf
-      iapply wp_label_push_nil_local
-      simp only [List.nil_append, pushBase, Nat.zero_add]
-      iunfold interpClosureNative at Hcl
-      iapply Hcl $$ %ws %⟨locs, j⟩ [] Hown Hf
-      iunfold interpVal; iright; iunfold interpValues
+    iunfold interpClosureNative at Hcl
+    ihave H := Hcl $$ %ws %⟨locs, j⟩ [] Hown Hf
+    · iunfold interpVal; iright; iunfold interpValues
       iexists ws
       isplitr; · ipureintro; rfl
       iexact Hv
     unfold wpWasmCtxFrame
-    ispecialize H $$ %_ %(lfilled_empty'.2 rfl)
+    ispecialize H $$ %([.label tf2.length [] (toEList e)] : Expr) %(by simp [lfilled, lfill, constList])
     iapply IrisWp.wp_wand (fun f => iprop(↪[frame] f)) (ι := wasmIrisGS) $$ H
     iintro %w ⟨Hw, Hown, Hf⟩
     isplitl [Hw]

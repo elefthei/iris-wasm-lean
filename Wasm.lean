@@ -7,6 +7,8 @@ import Wasm.Common
 import Wasm.ListExtra
 import Wasm.Numerics
 import Wasm.Bytes
+import Wasm.Binary
+import Wasm.TypeMatching
 import Wasm.MemoryList
 import Wasm.Datatypes
 import Wasm.Operations
@@ -16,6 +18,7 @@ import Wasm.Properties
 import Wasm.Instantiation
 import Wasm.TypeChecker
 import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 import Wasm.TypePreservation
 import Wasm.TypeProgress
 import Wasm.StdppAux

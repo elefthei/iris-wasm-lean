@@ -15,11 +15,11 @@ variable {hlc : HasLC} {GF : BundledGFunctors} [WasmG hlc GF] [LogrelNaInvs GF]
 
 attribute [local instance] WasmG.invGS
 
-@[rocq_alias iriswasm.typing_if]
-theorem typing_if (C : TContext) (tn tm : List ValueType) (es1 es2 : List BasicInstruction)
+theorem typing_if (C : TContext) {bt : Wasm.BlockType} (tn tm : List ValueType)
+    (es1 es2 : List BasicInstruction) (hsig : expandBlockType C.typesT bt = some (.tf tn tm))
     (h1 : ⊢ semanticTyping (GF := GF) (updLabel C ([tm] ++ C.label)) (toEList es1) (.tf tn tm))
     (h2 : ⊢ semanticTyping (GF := GF) (updLabel C ([tm] ++ C.label)) (toEList es2) (.tf tn tm)) :
-    ⊢ semanticTyping (GF := GF) C (toEList [.if_ (.tf tn tm) es1 es2]) (.tf (tn ++ [.i32]) tm) := by
+    ⊢ semanticTyping (GF := GF) C (toEList [.if_ bt es1 es2]) (.tf (tn ++ [.i32]) tm) := by
   unfold semanticTyping
   iintro %j %lh %hl #Hi #Hc %f %vs ⟨Hf, Hfv⟩ #Hv
   unfold interpVal interpValues
@@ -38,8 +38,8 @@ theorem typing_if (C : TContext) (tn tm : List ValueType) (es1 es2 : List BasicI
   icases Hw with %⟨z, Heq⟩
   subst Heq
   unfold interpExpression
-  rw [show ofVal (.immV (ws' ++ [.int32 z])) ++ toEList [.if_ (.tf tn tm) es1 es2] =
-      vToEList ws' ++ [.basic (.const (.int32 z)), .basic (.if_ (.tf tn tm) es1 es2)] ++ [] by
+  rw [show ofVal (.immV (ws' ++ [.int32 z])) ++ toEList [.if_ bt es1 es2] =
+      vToEList ws' ++ [.basic (.const (.int32 z)), .basic (.if_ bt es1 es2)] ++ [] by
     simp [ofVal, vToEList, toEList]]
   icases wp_wasm_empty_ctx (GF := GF) .NotStuck ⊤ _ _ with ⟨-, H⟩
   iapply H
@@ -49,7 +49,7 @@ theorem typing_if (C : TContext) (tn tm : List ValueType) (es1 es2 : List BasicI
   have hcont : ∀ es, (⊢ semanticTyping (GF := GF) (updLabel C ([tm] ++ C.label)) (toEList es)
       (.tf tn tm)) → ⊢ iprop(□ interpInstance (GF := GF) C hl j -∗ □ interpCtx C.label C.return_ hl C.local_ j lh -∗
         □ ([∗list] w;τ ∈ ws';tn, interpValue τ w) -∗ interpFrame C.local_ j f -∗ ↪[frame] f -∗
-        WP [AdministrativeInstruction.basic (.block (.tf tn tm) es)] CTX 0 ; (.base (vToEList ws') [])
+        WP [AdministrativeInstruction.basic (.block bt es)] CTX 0 ; (.base (vToEList ws') [])
           {{ vs, (interpVal tm vs ∨ interpBr C.local_ j C.return_ hl vs lh C.label ∨
             interpReturnOption C.return_ C.local_ j vs ∨
             interpCallHost C.local_ j C.return_ hl vs lh C.label tm) ∗
@@ -60,7 +60,7 @@ theorem typing_if (C : TContext) (tn tm : List ValueType) (es1 es2 : List BasicI
     iintro %LI %hLI
     rw [lfilled_Ind_Equivalent] at hLI
     cases hLI
-    ihave HH := typing_block C tn tm es h
+    ihave HH := typing_block C tn tm es hsig h
     unfold semanticTyping
     ihave HH := HH $$ %j %lh %hl Hi Hc %f %(.immV ws') [Hf Hfv]
     · iframe
@@ -68,15 +68,15 @@ theorem typing_if (C : TContext) (tn tm : List ValueType) (es1 es2 : List BasicI
     · unfold interpVal interpValues; iright; iexists ws'; isplitr; · ipureintro; rfl
       iexact Hv'
     unfold interpExpression
-    rw [show vToEList ws' ++ [.basic (.block (.tf tn tm) es)] ++ [] =
-      ofVal (.immV ws') ++ toEList [.block (.tf tn tm) es] by simp [ofVal, toEList]]
+    rw [show vToEList ws' ++ [.basic (.block bt es)] ++ [] =
+      ofVal (.immV ws') ++ toEList [.block bt es] by simp [ofVal, toEList]]
     iexact HH
   by_cases hz : z = Wasm.Int.zero
-  · iapply wp_if_false_ctx hz $$ Hf
+  · iapply wp_if_false_ctx (bt := bt) hz $$ Hf
     inext
     iintro Hf
     iapply hcont es2 h2 $$ Hi Hc Hv' Hfv Hf
-  · iapply wp_if_true_ctx hz $$ Hf
+  · iapply wp_if_true_ctx (bt := bt) hz $$ Hf
     inext
     iintro Hf
     iapply hcont es1 h1 $$ Hi Hc Hv' Hfv Hf

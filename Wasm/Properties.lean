@@ -477,6 +477,19 @@ theorem r_elimr_empty {s : StoreRecord} {f : Frame} {es : List AdministrativeIns
 
 /-! ### Typing -/
 
+/-- Unfolds `instTyping` into its conjuncts. -/
+theorem instTyping_spec {s : StoreRecord} {i : Instance} {C : TContext}
+    (h : instTyping s i C = true) :
+    i.types = C.typesT ∧ List.all2 (functionsAgree s.funcs) i.funcs C.funcT = true ∧
+      List.all2 (globalsAgree s.globals) i.globs C.global = true ∧
+      List.all2 (tabiAgree s.tables) i.tab C.table = true ∧
+      List.all2 (memiAgree s.mems) i.memory C.memory = true ∧
+      C.local_ = [] ∧ C.label = [] ∧ C.return_ = none := by
+  obtain ⟨ts, fs, tbs, ms, gs⟩ := i
+  obtain ⟨ts', tfs, tgs, tabsT, memsT, loc, lab, ret⟩ := C
+  cases loc <;> cases lab <;> cases ret <;>
+    simp_all [instTyping]
+
 /-- A reformulation of `ETyping.a` that is easier to use. -/
 @[rocq_alias iriswasm.ety_a']
 theorem ety_a' (s : StoreRecord) {C : TContext} {es : List AdministrativeInstruction}

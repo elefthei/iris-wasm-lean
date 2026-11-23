@@ -12,22 +12,27 @@ namespace IrisWasm
 open Wasm Helpers.ReduceDetPrelude
 open AdministrativeInstruction (basic trap)
 
-@[rocq_alias iriswasm.testop_i32_det]
 theorem testop_i32_det {c : I32} {s : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
-    {es : List AdministrativeInstruction} {testop : Testop} :
-    Reduce s f [basic (.const (.int32 c)), basic (.testop .i32 testop)] s' f' es →
-    reduceDetGoal s f [basic (.const (.int32 (wasmBool (appTestopI testop c))))] s' f' es
-      [basic (.const (.int32 c)), basic (.testop .i32 testop)] := by
+    {es : List AdministrativeInstruction} :
+    Reduce s f [basic (.const (.int32 c)), basic (.testop .i32 .eqz)] s' f' es →
+    reduceDetGoal s f [basic (.const (.int32 (wasmBool (Wasm.Int.ieqz c))))] s' f' es
+      [basic (.const (.int32 c)), basic (.testop .i32 .eqz)] := by
   intro Hred
   only_one Hred
 
-@[rocq_alias iriswasm.testop_i64_det]
 theorem testop_i64_det {c : I64} {s : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame}
-    {es : List AdministrativeInstruction} {testop : Testop} :
-    Reduce s f [basic (.const (.int64 c)), basic (.testop .i64 testop)] s' f' es →
-    reduceDetGoal s f [basic (.const (.int32 (wasmBool (appTestopI testop c))))] s' f' es
-      [basic (.const (.int64 c)), basic (.testop .i64 testop)] := by
+    {es : List AdministrativeInstruction} :
+    Reduce s f [basic (.const (.int64 c)), basic (.testop .i64 .eqz)] s' f' es →
+    reduceDetGoal s f [basic (.const (.int32 (wasmBool (Wasm.Int.ieqz c))))] s' f' es
+      [basic (.const (.int64 c)), basic (.testop .i64 .eqz)] := by
   intro Hred
   only_one Hred
+
+theorem testop_v128_det {c : BitVec 128} {s s' : StoreRecord} {f f' : Frame}
+    {es : List AdministrativeInstruction}
+    (hr : Reduce s f [basic (.const (.vec128 c)), basic (.testop .v128 .anyTrue)] s' f' es) :
+    reduceDetGoal s f [basic (.const (.int32 (wasmBool (c != 0))))] s' f' es
+      [basic (.const (.vec128 c)), basic (.testop .v128 .anyTrue)] := by
+  only_one hr
 
 end IrisWasm

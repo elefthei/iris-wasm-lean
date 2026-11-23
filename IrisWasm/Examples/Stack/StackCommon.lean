@@ -284,7 +284,7 @@ def validateStack (x : Immediate) : List BasicInstruction :=
   [ .getLocal x,
     i32const 65536,
     .binop .i32 (.i (.rem .u)),
-    .if_ (.tf [] []) [.unreachable] [] ]
+    .if_ (.result none) [.unreachable] [] ]
 
 @[rocq_alias iriswasm.is_stack_divide]
 theorem is_stack_divide (v : Nat) (s : List I32) (n : Nat) :
@@ -324,12 +324,12 @@ private theorem wp_validate_stack_prefix (v : Nat) (f : Frame) (E : CoPset) (x :
     ⊢ (↪[frame] f -∗
       (↪[frame] f -∗ WP ([.basic (.const (.int32
           (Wasm.Int.intOfZ (w := 32) (v : _root_.Int) % Wasm.Int.intOfZ 65536))),
-        .basic (.if_ (.tf [] []) [.unreachable] [])] : Expr) @ E {{ Φ }}) -∗
+        .basic (.if_ (.result none) [.unreachable] [])] : Expr) @ E {{ Φ }}) -∗
       WP (toEList (validateStack x) : Expr) @ E {{ Φ }} : IProp GF) := by
   iintro Hf Hk
   rw [show (toEList (validateStack x) : Expr) = [.basic (.getLocal x)] ++
     [.basic (i32const 65536), .basic (.binop .i32 (.i (.rem .u))),
-      .basic (.if_ (.tf [] []) [.unreachable] [])] from rfl]
+      .basic (.if_ (.result none) [.unreachable] [])] from rfl]
   iapply wp_seq _ _ _ (fun w => iprop(⌜w = .immV [valueOfUint v]⌝ ∗ ↪[frame] f))
   isplitr
   · iintro ⟨%h, -⟩; cases h
@@ -339,9 +339,9 @@ private theorem wp_validate_stack_prefix (v : Nat) (f : Frame) (E : CoPset) (x :
   iintro %w ⟨%hw, Hf⟩
   subst hw
   rw [show (ofVal (.immV [valueOfUint v]) ++ [.basic (i32const 65536),
-      .basic (.binop .i32 (.i (.rem .u))), .basic (.if_ (.tf [] []) [.unreachable] [])] : Expr) =
+      .basic (.binop .i32 (.i (.rem .u))), .basic (.if_ (.result none) [.unreachable] [])] : Expr) =
     [.basic (.const (valueOfUint v)), .basic (.const (.int32 (Wasm.Int.intOfZ 65536))),
-      .basic (.binop .i32 (.i (.rem .u)))] ++ [.basic (.if_ (.tf [] []) [.unreachable] [])]
+      .basic (.binop .i32 (.i (.rem .u)))] ++ [.basic (.if_ (.result none) [.unreachable] [])]
     from rfl]
   iapply wp_seq _ _ _ (fun w => iprop(⌜w = .immV [.int32
     (Wasm.Int.intOfZ (w := 32) (v : _root_.Int) % Wasm.Int.intOfZ 65536)]⌝ ∗ ↪[frame] f))
@@ -351,14 +351,14 @@ private theorem wp_validate_stack_prefix (v : Nat) (f : Frame) (E : CoPset) (x :
   · have hb : appBinop (.i (.rem .u)) (valueOfUint v) (.int32 (Wasm.Int.intOfZ 65536)) =
         some (.int32 (Wasm.Int.intOfZ (w := 32) (v : _root_.Int) % Wasm.Int.intOfZ 65536)) := by
       simp [valueOfUint, appBinop, appBinopI, Wasm.Int.iremU]; decide
-    iapply wp_binop (t := .i32) hb $$ Hf
+    iapply wp_binop (t := .i32) rfl rfl .i32Agree hb $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
   rw [show (ofVal (.immV [.int32 (Wasm.Int.intOfZ (w := 32) (v : _root_.Int) %
-      Wasm.Int.intOfZ 65536)]) ++ [.basic (.if_ (.tf [] []) [.unreachable] [])] : Expr) =
+      Wasm.Int.intOfZ 65536)]) ++ [.basic (.if_ (.result none) [.unreachable] [])] : Expr) =
     [.basic (.const (.int32 (Wasm.Int.intOfZ (w := 32) (v : _root_.Int) %
-      Wasm.Int.intOfZ 65536))), .basic (.if_ (.tf [] []) [.unreachable] [])] from rfl]
+      Wasm.Int.intOfZ 65536))), .basic (.if_ (.result none) [.unreachable] [])] from rfl]
   iapply Hk $$ Hf
 
 @[rocq_alias iriswasm.is_stack_valid]
@@ -374,9 +374,9 @@ theorem is_stack_valid (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPse
     iintro Hf
     iapply wp_if_false ((rem_two16_eq_zero v).2 hdiv) $$ Hf
     iintro !> Hf
-    rw [show ([.basic (.block (.tf [] []) [])] : Expr) = [] ++ [.basic (.block (.tf [] []) [])]
+    rw [show ([.basic (.block (.result none) [])] : Expr) = [] ++ [.basic (.block (.result none) [])]
       from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result none) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     iintro !> Hf
     iapply wp_label_value (Φ := fun w => iprop(⌜w = .immV []⌝ ∗ isStack v s n)) (by rfl) $$ Hf
     inext; iframe; ipureintro; rfl
@@ -396,9 +396,9 @@ theorem check_stack_valid (v : Nat) (f : Frame) (E : CoPset) (x : Nat) :
     Wasm.Int.zero
   · iapply wp_if_false hr $$ Hf
     iintro !> Hf
-    rw [show ([.basic (.block (.tf [] []) [])] : Expr) = [] ++ [.basic (.block (.tf [] []) [])]
+    rw [show ([.basic (.block (.result none) [])] : Expr) = [] ++ [.basic (.block (.result none) [])]
       from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result none) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     iintro !> Hf
     iapply wp_label_value
       (Φ := fun w => iprop(⌜w = .trapV⌝ ∨ ⌜w = .immV []⌝ ∗ ⌜65536 ∣ v⌝)) (by rfl) $$ Hf
@@ -407,13 +407,13 @@ theorem check_stack_valid (v : Nat) (f : Frame) (E : CoPset) (x : Nat) :
     · ipureintro; exact (rem_two16_eq_zero v).1 hr
   · iapply wp_if_true hr $$ Hf
     iintro !> Hf
-    rw [show ([.basic (.block (.tf [] []) [.unreachable])] : Expr) =
-      [] ++ [.basic (.block (.tf [] []) [.unreachable])] from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    rw [show ([.basic (.block (.result none) [.unreachable])] : Expr) =
+      [] ++ [.basic (.block (.result none) [.unreachable])] from rfl]
+    iapply wp_block (bt := .result none) (vs := []) (m := 0) rfl rfl rfl rfl rfl $$ Hf
     iintro !> Hf
     iapply wp_wand_s (Φ := fun w => iprop(⌜w = .trapV⌝ ∗ ↪[frame] f)) $$ [Hf]
-    · rw [show ([.label ([] : List ValueType).length [] ([] ++ toEList [.unreachable])] : Expr) =
-        [] ++ [.label 0 [] [.basic .unreachable]] ++ [] from rfl]
+    · rw [show ([.label 0 [] ([] ++ toEList [.unreachable])] : Expr) =
+          [] ++ [.label 0 [] [.basic .unreachable]] ++ [] from rfl]
       iapply IrisRulesTrap.wp_label_trap _ _ _ [] _ _ [] _ _ rfl $$ Hf
       iintro Hf
       iapply wp_unreachable (Φ := fun w => iprop(⌜w = .trapV⌝)) $$ Hf
@@ -425,7 +425,7 @@ theorem check_stack_valid (v : Nat) (f : Frame) (E : CoPset) (x : Nat) :
 @[rocq_alias iriswasm.validate_stack_bound]
 def validateStackBound (x : Immediate) : List BasicInstruction :=
   [ .getLocal x,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .drop ]
 
 /-- An `i32` address below `2^32` survives the `i32` round trip. -/
@@ -445,7 +445,7 @@ private theorem set_self {s : List I32} {j : Nat} {sv : I32} (h : s[j]? = some s
 @[rocq_alias iriswasm.stack_load_0]
 theorem stack_load_0 (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset) :
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ isStack v s n -∗ ↪[frame] f -∗
-      WP ([.basic (.const (valueOfUint v)), .basic (.load .i32 none 0 0)] : Expr) @ E
+      WP ([.basic (.const (valueOfUint v)), .basic (.load .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV [valueOfUint (v + s.length * 4)]⌝ ∗ isStack v s n ∗ ↪[frame] f }}
       : IProp GF) := by
   simp only [isStack]
@@ -458,9 +458,9 @@ theorem stack_load_0 (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset)
       n ↦[wms][ Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (v : _root_.Int)) + 0 ]
         bits (.int32 (Wasm.Int.repr ((v + s.length * 4 : Nat) : _root_.Int)))) ∗ ↪[frame] f))
     $$ [Hv Hf]
-  · iapply wp_load (fun w => iprop(⌜w = .immV [valueOfUint (v + s.length * 4)]⌝)) _ _ .i32
+  · iapply wp_load (x := 0) (fun w => iprop(⌜w = .immV [valueOfUint (v + s.length * 4)]⌝)) _ _ .i32
       (.int32 (Wasm.Int.repr ((v + s.length * 4 : Nat) : _root_.Int))) 0 0
-      (Wasm.Int.intOfZ (v : _root_.Int)) n f rfl hmem
+      (.i32 (Wasm.Int.intOfZ (v : _root_.Int))) n f rfl hmem
     isplitr
     · inext; ipureintro; rfl
     rw [bits_int32]
@@ -484,7 +484,7 @@ theorem is_stack_bound_valid (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E :
       {{ w, ⌜w = .immV []⌝ ∗ isStack v s n ∗ ↪[frame] f }} := by
   iintro ⟨%hmem, %hlocs, Hs, Hf⟩
   rw [show (toEList (validateStackBound x) : Expr) = [.basic (.getLocal x)] ++
-    [.basic (.load .i32 none 0 0), .basic .drop] from rfl]
+    [.basic (.load .i32 none ⟨0, 0, 0⟩), .basic .drop] from rfl]
   iapply wp_seq _ _ _ (fun w => iprop(⌜w = .immV [valueOfUint v]⌝ ∗ ↪[frame] f))
   isplitr
   · iintro ⟨%h, -⟩; cases h
@@ -493,8 +493,10 @@ theorem is_stack_bound_valid (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E :
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
-  rw [show (ofVal (.immV [valueOfUint v]) ++ [.basic (.load .i32 none 0 0), .basic .drop] : Expr) =
-    [.basic (.const (valueOfUint v)), .basic (.load .i32 none 0 0)] ++ [.basic .drop] from rfl]
+  rw [show (ofVal (.immV [valueOfUint v]) ++
+      [.basic (.load .i32 none ⟨0, 0, 0⟩), .basic .drop] : Expr) =
+    [.basic (.const (valueOfUint v)), .basic (.load .i32 none ⟨0, 0, 0⟩)] ++
+      [.basic .drop] from rfl]
   iapply wp_seq _ _ _ (fun w => iprop(⌜w = .immV [valueOfUint (v + s.length * 4)]⌝ ∗
     isStack v s n ∗ ↪[frame] f))
   isplitr
@@ -514,15 +516,16 @@ theorem is_stack_bound_valid (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E :
     ipureintro; exact hw
 
 /-- `validate_stack_bound` traps as soon as the `i32` load at `v` is out of bounds. -/
-private theorem fail_bound_aux (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat) (es : Expr)
+private theorem fail_bound_aux {aw : AddrType} (v n : Nat) (f : Frame) (E : CoPset)
+    (x len : Nat) (es : Expr)
     (hmem : f.inst.memory[0]? = some n) (hlocs : f.locs[x]? = some (valueOfUint v))
     (hk : Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (v : _root_.Int)) + 4 > len) :
-    ⊢ (↪[frame] f -∗ n ↦[wmlength] len -∗
+    ⊢ (↪[frame] f -∗ n ↦[wmlength] (aw, len) -∗
       WP (toEList (validateStackBound x) ++ es : Expr) @ E
-        {{ w, ⌜w = .trapV⌝ ∗ n ↦[wmlength] len ∗ ↪[frame] f }} : IProp GF) := by
+        {{ w, ⌜w = .trapV⌝ ∗ n ↦[wmlength] (aw, len) ∗ ↪[frame] f }} : IProp GF) := by
   iintro Hf Hlen
   rw [show (toEList (validateStackBound x) ++ es : Expr) = [.basic (.getLocal x)] ++
-    ([.basic (.load .i32 none 0 0), .basic .drop] ++ es) from rfl]
+    ([.basic (.load .i32 none ⟨0, 0, 0⟩), .basic .drop] ++ es) from rfl]
   iapply wp_seq _ _ _ (fun w => iprop(⌜w = .immV [valueOfUint v]⌝ ∗ ↪[frame] f))
   isplitr
   · iintro ⟨%h, -⟩; cases h
@@ -531,14 +534,15 @@ private theorem fail_bound_aux (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
-  rw [show (ofVal (.immV [valueOfUint v]) ++ ([.basic (.load .i32 none 0 0), .basic .drop] ++ es)
-      : Expr) =
-    [.basic (.const (valueOfUint v)), .basic (.load .i32 none 0 0)] ++ ([.basic .drop] ++ es)
+  rw [show (ofVal (.immV [valueOfUint v]) ++
+      ([.basic (.load .i32 none ⟨0, 0, 0⟩), .basic .drop] ++ es) : Expr) =
+    [.basic (.const (valueOfUint v)), .basic (.load .i32 none ⟨0, 0, 0⟩)] ++
+      ([.basic .drop] ++ es)
     from rfl]
   rw [show valueOfUint v = .int32 (Wasm.Int.intOfZ (v : _root_.Int)) from rfl]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ E _ _)).2
   iapply wp_seq_can_trap_ctx _ E _ (fun _ => iprop(⌜False⌝)) _ _ 0 (.base [] [])
-    (fun f' => iprop(⌜f' = f⌝ ∗ n ↦[wmlength] len)) f
+    (fun f' => iprop(⌜f' = f⌝ ∗ n ↦[wmlength] (aw, len))) f
   isplitr
   · iintro %h; exact h.elim
   isplitr
@@ -550,10 +554,11 @@ private theorem fail_bound_aux (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat
   · iexact Hf
   isplitl [Hlen]
   · iintro Hf
-    iapply wp_wand_s (Φ := fun w => iprop((⌜w = .trapV⌝ ∗ n ↦[wmlength] len) ∗ ↪[frame] f))
+    iapply wp_wand_s (Φ := fun w => iprop((⌜w = .trapV⌝ ∗ n ↦[wmlength] (aw, len)) ∗ ↪[frame] f))
       $$ [Hf Hlen]
-    · iapply wp_load_failure (fun w => iprop(⌜w = .trapV⌝)) _ _ 0 0
-        (Wasm.Int.intOfZ (v : _root_.Int)) n f .i32 len hmem (by simp only [lengthT]; omega)
+    · iapply wp_load_failure (aw := aw) (x := 0) (fun w => iprop(⌜w = .trapV⌝)) _ _ 0 0
+        (.i32 (Wasm.Int.intOfZ (v : _root_.Int))) n f .i32 len hmem
+        (by simpa only [AddressOperand.unsigned, lengthT, Nat.add_zero] using hk)
       isplitr
       · inext; ipureintro; rfl
       isplitl [Hf]
@@ -567,21 +572,21 @@ private theorem fail_bound_aux (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat
       ipureintro; rfl
   · iintro %w %f0 ⟨%h, -⟩; exact h.elim
 
-@[rocq_alias iriswasm.check_stack_bound_valid]
-theorem check_stack_bound_valid (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat)
-    (s : List I32) :
+#rocq_ignore iriswasm.check_stack_bound_valid "The bounds check preserves memory metadata at either width"
+theorem check_stack_bound_valid {aw : AddrType} (v n : Nat) (f : Frame) (E : CoPset)
+    (x len : Nat) (s : List I32) :
     let k := Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (v : _root_.Int))
     (iprop(⌜f.inst.memory[0]? = some n⌝ ∗ ⌜f.locs[x]? = some (valueOfUint v)⌝ ∗
-      ↪[frame] f ∗ n ↦[wmlength] len ∗ (⌜k < len⌝ -∗ isStack v s n)) : IProp GF) ⊢
+      ↪[frame] f ∗ n ↦[wmlength] (aw, len) ∗ (⌜k < len⌝ -∗ isStack v s n)) : IProp GF) ⊢
     WP (toEList (validateStackBound x) : Expr) @ E
       {{ w, (⌜w = .trapV⌝ ∨ ⌜w = .immV []⌝ ∗ ⌜k < len⌝ ∗ isStack v s n) ∗
-        n ↦[wmlength] len ∗ ↪[frame] f }} := by
+        n ↦[wmlength] (aw, len) ∗ ↪[frame] f }} := by
   intro k
   iintro ⟨%hmem, %hlocs, Hf, Hlen, Hs⟩
   by_cases hk : k + 4 > len
-  · iapply wp_wand_s (Φ := fun w => iprop(⌜w = .trapV⌝ ∗ n ↦[wmlength] len ∗ ↪[frame] f))
+  · iapply wp_wand_s (Φ := fun w => iprop(⌜w = .trapV⌝ ∗ n ↦[wmlength] (aw, len) ∗ ↪[frame] f))
       $$ [Hf Hlen]
-    · have h := fail_bound_aux (GF := GF) v n f E x len [] hmem hlocs hk
+    · have h := fail_bound_aux (GF := GF) (aw := aw) v n f E x len [] hmem hlocs hk
       rw [List.append_nil] at h
       iapply h $$ Hf Hlen
     · iintro %w ⟨%hw, Hlen, Hf⟩
@@ -600,13 +605,14 @@ theorem check_stack_bound_valid (v n : Nat) (f : Frame) (E : CoPset) (x len : Na
       iframe
       ipureintro; exact ⟨hw, by omega⟩
 
-@[rocq_alias iriswasm.fail_stack_bound_valid]
-theorem fail_stack_bound_valid (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat) (es : Expr) :
+#rocq_ignore iriswasm.fail_stack_bound_valid "The failed load preserves memory metadata at either width"
+theorem fail_stack_bound_valid {aw : AddrType} (v n : Nat) (f : Frame) (E : CoPset)
+    (x len : Nat) (es : Expr) :
     let k := Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (v : _root_.Int));
     ⊢ (⌜f.inst.memory[0]? = some n⌝ ∗ ⌜f.locs[x]? = some (valueOfUint v)⌝ ∗ ⌜k ≥ len⌝ ∗
-      ↪[frame] f ∗ n ↦[wmlength] len -∗
+      ↪[frame] f ∗ n ↦[wmlength] (aw, len) -∗
       WP (toEList (validateStackBound x) ++ es : Expr) @ E
-        {{ w, ⌜w = .trapV⌝ ∗ n ↦[wmlength] len ∗ ↪[frame] f }} : IProp GF) := by
+        {{ w, ⌜w = .trapV⌝ ∗ n ↦[wmlength] (aw, len) ∗ ↪[frame] f }} : IProp GF) := by
   intro k
   iintro ⟨%hmem, %hlocs, %hk, Hf, Hlen⟩
   iapply fail_bound_aux v n f E x len es hmem hlocs (by omega) $$ Hf Hlen
@@ -615,7 +621,7 @@ theorem fail_stack_bound_valid (v n : Nat) (f : Frame) (E : CoPset) (x len : Nat
 theorem stack_load_0_alt (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset) (k : Nat) :
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ ⌜k = v + s.length * 4⌝ -∗ isStack v s n -∗
       ↪[frame] f -∗
-      WP ([.basic (.const (valueOfUint v)), .basic (.load .i32 none 0 0)] : Expr) @ E
+      WP ([.basic (.const (valueOfUint v)), .basic (.load .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV [valueOfUint k]⌝ ∗ isStack v s n ∗ ↪[frame] f }}
       : IProp GF) := by
   iintro %hmem %hk Hs Hf
@@ -629,7 +635,7 @@ theorem stack_load_j (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset)
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ ⌜s[j]? = some sv⌝ -∗ ⌜0 ≤ j ∧ j < s.length⌝ -∗
       isStack v s n -∗ ↪[frame] f -∗
       WP ([.basic (.const (valueOfUint (v + s.length * 4 - 4 * j))),
-          .basic (.load .i32 none 0 0)] : Expr) @ E
+          .basic (.load .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV [.int32 sv]⌝ ∗ isStack v s n ∗ ↪[frame] f }}
       : IProp GF) := by
   simp only [isStack]
@@ -645,8 +651,8 @@ theorem stack_load_j (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset)
       n ↦[wms][ Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32)
         ((v + s.length * 4 - 4 * j : Nat) : _root_.Int)) + 0 ] bits (.int32 sv)) ∗ ↪[frame] f))
     $$ [Hj Hf]
-  · iapply wp_load (fun w => iprop(⌜w = .immV [.int32 sv]⌝)) _ _ .i32 (.int32 sv) 0 0
-      (Wasm.Int.intOfZ ((v + s.length * 4 - 4 * j : Nat) : _root_.Int)) n f rfl hmem
+  · iapply wp_load (x := 0) (fun w => iprop(⌜w = .immV [.int32 sv]⌝)) _ _ .i32 (.int32 sv) 0 0
+      (.i32 (Wasm.Int.intOfZ ((v + s.length * 4 - 4 * j : Nat) : _root_.Int))) n f rfl hmem
     isplitr
     · inext; ipureintro; rfl
     rw [bits_int32]
@@ -668,7 +674,7 @@ theorem stack_load_j_alt (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoP
     (sv : I32) :
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ ⌜k = v + s.length * 4 - 4 * j⌝ -∗ ⌜s[j]? = some sv⌝ -∗
       ⌜0 ≤ j ∧ j < s.length⌝ -∗ isStack v s n -∗ ↪[frame] f -∗
-      WP ([.basic (.const (valueOfUint k)), .basic (.load .i32 none 0 0)] : Expr) @ E
+      WP ([.basic (.const (valueOfUint k)), .basic (.load .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV [.int32 sv]⌝ ∗ isStack v s n ∗ ↪[frame] f }}
       : IProp GF) := by
   iintro %hmem %hk %hsv %hj Hs Hf
@@ -684,7 +690,7 @@ theorem stack_store_j (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ ⌜s[j]? = some sv⌝ -∗ ⌜0 ≤ j ∧ j < s.length⌝ -∗
       isStack v s n -∗ ↪[frame] f -∗
       WP ([.basic (.const (valueOfUint (v + s.length * 4 - 4 * j))),
-          .basic (.const (.int32 v0)), .basic (.store .i32 none 0 0)] : Expr) @ E
+          .basic (.const (.int32 v0)), .basic (.store .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV []⌝ ∗ isStack v (s.set j v0) n ∗ ↪[frame] f }}
       : IProp GF) := by
   simp only [isStack, List.length_set]
@@ -700,8 +706,9 @@ theorem stack_store_j (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : CoPset
       n ↦[wms][ Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32)
         ((v + s.length * 4 - 4 * j : Nat) : _root_.Int)) + 0 ] bits (.int32 v0)) ∗ ↪[frame] f))
     $$ [Hj Hf]
-  · iapply wp_store (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32 (.int32 v0) (serialiseI32 sv) 0 0
-      (Wasm.Int.intOfZ ((v + s.length * 4 - 4 * j : Nat) : _root_.Int)) n f rfl
+  · iapply wp_store (x := 0) (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32
+      (.int32 v0) (serialiseI32 sv) 0 0
+      (.i32 (Wasm.Int.intOfZ ((v + s.length * 4 - 4 * j : Nat) : _root_.Int))) n f rfl
       (length_encodeInt ..) hmem
     isplitr
     · inext; ipureintro; rfl
@@ -723,7 +730,7 @@ theorem stack_store_j_alt (v : Nat) (s : List I32) (n : Nat) (f : Frame) (E : Co
     ⊢ (⌜f.inst.memory[0]? = some n⌝ -∗ ⌜k = v + s.length * 4 - 4 * j⌝ -∗ ⌜s[j]? = some sv⌝ -∗
       ⌜0 ≤ j ∧ j < s.length⌝ -∗ isStack v s n -∗ ↪[frame] f -∗
       WP ([.basic (.const (valueOfUint k)), .basic (.const (.int32 v0)),
-          .basic (.store .i32 none 0 0)] : Expr) @ E
+          .basic (.store .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV []⌝ ∗ isStack v (s.set j v0) n ∗ ↪[frame] f }}
       : IProp GF) := by
   iintro %hmem %hk %hsv %hj Hs Hf

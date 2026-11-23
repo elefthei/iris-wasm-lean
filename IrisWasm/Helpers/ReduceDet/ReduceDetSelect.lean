@@ -34,4 +34,11 @@ theorem select_true_det {v1 v2 : Value} {n : I32} {s : StoreRecord} {f : Frame}
   intro _ Hred
   only_one Hred
 
+theorem vbitselect_inv {x y mask : BitVec 128} {s s' : StoreRecord} {f f' : Frame}
+    {es : List AdministrativeInstruction}
+    (h : Reduce s f [basic (.const (.vec128 x)), basic (.const (.vec128 y)),
+      basic (.const (.vec128 mask)), basic .vbitselect] s' f' es) :
+    (s, f, [basic (.const (.vec128 (vbitselect x y mask)))]) = (s', f', es) := by
+  only_one_reduction h
+
 end IrisWasm

@@ -6,7 +6,7 @@ Authors: Iris-Wasm Lean port contributors
 import IrisWasm.Host.IrisHost
 import IrisWasm.Logrel.IrisFundamentalHelpers
 import IrisWasm.Examples.Stack.StackSpecs
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/stack/stack_instantiation.v`.
 
@@ -47,7 +47,7 @@ def stackModule : Module where
     { type := .typeidx 2, locals := [.i32, .i32], body := stackMap },
     { type := .typeidx 1, locals := [], body := lengthStack } ]
   tables := [{ type := { limits := { min := 1, max := none }, elemType := .funcref } }]
-  mems := [{ min := 0, max := none }]
+  mems := [{ address := .i32, limits := ⟨0, none⟩ }]
   globals := []
   elem := []
   data := []
@@ -78,7 +78,7 @@ abbrev stackCtx (tt tf : List FunctionType) (tloc : List ValueType) (tlab : List
     (tret : Option (List ValueType)) : TContext :=
   { typesT := tt, funcT := tf, global := [],
     table := [{ limits := { min := 1, max := none }, elemType := .funcref }],
-    memory := [{ min := 0, max := none }], local_ := tloc, label := tlab, return_ := tret }
+    memory := [{ address := .i32, limits := ⟨0, none⟩ }], local_ := tloc, label := tlab, return_ := tret }
 
 @[rocq_alias iriswasm.validate_stack_typing]
 theorem validate_stack_typing (x : Nat) (tt tf : List FunctionType) (tloc : List ValueType)
@@ -144,12 +144,8 @@ theorem length_stack_typing (tt tf : List FunctionType) (tlab : List (List Value
 
 @[rocq_alias iriswasm.module_typing_stack]
 theorem module_typing_stack : ModuleTyping stackModule [] expts := by
-  refine ⟨funcTypes, [], ?_⟩
-  refine ⟨?_, rfl, rfl, .nil, by simp, by simp, rfl, .nil, ?_⟩
-  · refine .cons ?_ (.cons ?_ (.cons ?_ (.cons ?_ (.cons ?_ (.cons ?_ (.cons ?_ .nil))))))
-    all_goals refine ⟨by decide, by decide, ?_⟩; rw [← b_e_type_checker_reflects_typing]; kernel_rfl
-  · repeat' refine .cons rfl ?_
-    exact .nil
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  kernel_rfl
 
 @[rocq_alias iriswasm.stack_instance]
 def stackInstance (idfs : List Funcaddr) (m t : Nat) : Instance :=
@@ -319,13 +315,8 @@ theorem wp_invoke_native_frame (s : Stuckness) (E : CoPset) (a : Nat) (i : Insta
     (to_of_val (.immV vcs)) hlen rfl $$ Hf Ha
   inext; iintro ⟨Hf, Ha⟩
   iapply (wp_frame_rewrite _ _ _ _ _ _).1
-  iapply wp_frame_bind _ _ _ _ _ _ _ ?_ $$ Hf
-  · simp [toVal, toValInstr, mergeValuesList]
+  iapply wp_frame_bind _ _ _ _ _ _ _ (toVal_native_frame_none _ _ _) $$ Hf
   iintro Hf
-  rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] t2s) body)]]
-  iapply wp_block (n := 0) (t1s := []) rfl rfl rfl rfl $$ Hf
-  inext; iintro Hf
-  rw [List.nil_append]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [pushBase]
@@ -392,13 +383,8 @@ theorem wp_invoke_native_unit (s : Stuckness) (E : CoPset) (a : Nat) (i : Instan
     (to_of_val (.immV [])) rfl rfl $$ Hf Ha
   inext; iintro ⟨Hf, Ha⟩
   iapply (wp_frame_rewrite _ _ _ _ _ _).1
-  iapply wp_frame_bind _ _ _ _ _ _ _ ?_ $$ Hf
-  · simp [toVal, toValInstr, mergeValuesList]
+  iapply wp_frame_bind _ _ _ _ _ _ _ (toVal_native_frame_none _ _ _) $$ Hf
   iintro Hf
-  rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) body)]]
-  iapply wp_block (n := 0) (t1s := []) rfl rfl rfl rfl $$ Hf
-  inext; iintro Hf
-  rw [List.nil_append]
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [pushBase]
@@ -438,14 +424,14 @@ theorem wp_invoke_native_unit (s : Stuckness) (E : CoPset) (a : Nat) (i : Instan
 
 private theorem spec0_holds (a0 m : Nat) (i0 : Instance) (hm : i0.memory[0]? = some m) (E : CoPset) :
     ⊢ spec0NewStack (GF := GF) a0 i0 [.i32] newStack (fun a b => isStack a b m)
-      (fun n => m ↦[wmlength] n) E := by
+      (fun n => m ↦[wmlength] (.i32, n)) E := by
   unfold spec0NewStack
   iintro %f %addr !> %Φ ⟨Hf, Hcl, Hlen, %h1, %h2, %h3⟩ HΦ
   rw [show ([.invoke a0] : Expr) = vToEList [] ++ [.invoke a0] from rfl]
   iapply IrisWp.wp_wand (fun f => iprop(↪[frame] f)) (ι := wasmIrisGS) $$ [Hf Hcl Hlen]
   · iapply wp_invoke_native_frame .NotStuck E a0 i0 [] [.i32] [.i32] newStack [] f
-      (fun v => iprop((⌜v = .immV [valueOfInt (-1)]⌝ ∗ m ↦[wmlength] addr) ∨
-        (⌜v = .immV [valueOfUint addr]⌝ ∗ isStack addr [] m ∗ m ↦[wmlength] (addr + pageSize))))
+      (fun v => iprop((⌜v = .immV [valueOfInt (-1)]⌝ ∗ m ↦[wmlength] (.i32, addr)) ∨
+        (⌜v = .immV [valueOfUint addr]⌝ ∗ isStack addr [] m ∗ m ↦[wmlength] (.i32, addr + pageSize))))
       rfl ?_ $$ Hf Hcl
     · intro w
       iintro (⟨%h, -⟩ | ⟨%h, -⟩) <;> ipureintro <;> subst h <;> simp
@@ -805,20 +791,21 @@ theorem instantiate_stack_spec [LogrelNaInvs GF] (s : Stuckness) (E : CoPset)
   rcases mems with _|⟨m,_|⟨_,_⟩⟩ <;> simp at Himlen
   rcases exp_addrs with _|⟨e0,_|⟨e1,_|⟨e2,_|⟨e3,_|⟨e4,_|⟨e5,_|⟨e6,_|⟨e7,_|⟨_,_⟩⟩⟩⟩⟩⟩⟩⟩⟩ <;> simp at hlen
   isimp [stackModule, getImportFuncCount, getImportTableCount, getImportMemCount, moduleInstBuildTables,
-    moduleInstBuildMems, moduleInstTableBase, moduleInstMemBase, moduleExportResourcesHost, moduleInstTableBaseCreate, moduleInstMemBaseFunc] at Hwf Hwt Hwm Hexphost
+    moduleInstBuildMems, moduleInstTableBase, moduleInstMemBase, moduleExportResourcesHost,
+    moduleInstTableBaseCreate, moduleInstMemBaseFunc, memMk] at Hwf Hwt Hwm Hexphost
   icases Hwf with ⟨Hf0, Hf1, Hf2, Hf3, Hf4, Hf5, Hf6, -⟩
   icases Hwt with ⟨Ht, -⟩
   icases Hwm with ⟨Hm, -⟩
   iunfold memBlock at Hm
-  icases Hm with ⟨-, Hmlen, -⟩
+  icases Hm with ⟨-, -, Hmlen, -⟩
   icases Hexphost with ⟨⟨%n0, Hx0⟩, ⟨%n1, Hx1⟩, ⟨%n2, Hx2⟩, ⟨%n3, Hx3⟩, ⟨%n4, Hx4⟩, ⟨%n5, Hx5⟩, ⟨%n6, Hx6⟩, ⟨%n7, Hx7⟩, -⟩
   isimp at Hf0 Hf1 Hf2 Hf3 Hf4 Hf5 Hf6 Hx0 Hx1 Hx2 Hx3 Hx4 Hx5 Hx6 Hx7
   let i0 : Instance := ⟨[.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []],
     [a0, a1, a2, a3, a4, a5, a6], [t], [m], globs⟩
   iexists a0, a1, a2, a3, a4, a5, a6, t, n0, n1, n2, n3, n4, n5, n6, n7,
     newStack, isEmpty, isFull, pop, push, stackMap, lengthStack, i0,
-    [.i32], [], [], [.i32], [.i32], [.i32, .i32], [], ⟨[none], none⟩,
-    (fun a b => isStack a b m), (fun n => m ↦[wmlength] n)
+    [.i32], [], [], [.i32], [.i32], [.i32, .i32], [], ⟨RunTable.uniform 1 none, none⟩,
+    (fun a b => isStack a b m), (fun n => m ↦[wmlength] (.i32, n))
   isplitl [Hx0 Hx1 Hx2 Hx3 Hx4 Hx5 Hx6 Hx7]
   · iunfold importResourcesHost
     isimp only [stackInstVis, List.map_cons, List.map_nil, List.cons_append, List.nil_append]
@@ -911,7 +898,7 @@ theorem instantiate_stack_spec [LogrelNaInvs GF] (s : Stuckness) (E : CoPset)
   isplitr
   · ipureintro; decide
   isplitl [Hmlen]
-  · isimp only [Wasm.lengthMem, MemoryList.lengthMem, List.length_nil] at Hmlen
+  · isimp only [Wasm.lengthMem, MemoryList.length_make] at Hmlen
     iexact Hmlen
   isplitr
   · iapply spec0_holds a0 m i0 rfl E

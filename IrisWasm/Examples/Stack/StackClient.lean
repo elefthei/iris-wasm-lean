@@ -5,7 +5,7 @@ Authors: Iris-Wasm Lean port contributors
 -/
 import IrisWasm.Examples.Stack.StackInstantiation
 import IrisWasm.Rules.IrisExampleHelper
-import Wasm.TypeCheckerReflectsTyping
+import Wasm.ModuleValidation
 
 /-! Port of `theories/iris/examples/stack/stack_client.v`.
 
@@ -29,7 +29,7 @@ def main : List BasicInstruction :=
     i32const (-1),
     .relop .i32 (.i .eq),
     -- If new_stack failed, set global v0 to -1 and return
-    .if_ (.tf [] []) [i32const (-1), .setGlobal 0, .return_] [],
+    .if_ (.result none) [i32const (-1), .setGlobal 0, .return_] [],
     .getLocal 0,
     i32const 4,
     .call 4, -- Push 4 onto the stack
@@ -78,16 +78,8 @@ def clientModule : Module where
 @[rocq_alias iriswasm.stack_client.module_typing_client]
 theorem module_typing_client :
     ModuleTyping clientModule expts [.glob { mut_ := .mut, t := .i32 }] := by
-  refine ⟨[.tf [] [], .tf [.i32] [.i32]], [{ mut_ := .mut, t := .i32 }], ?_⟩
-  refine ⟨.cons ⟨by decide, by decide, ?_⟩ (.cons ⟨by decide, by decide, ?_⟩ .nil), by decide,
-    by decide, .cons ⟨by decide, rfl, ?_⟩ .nil, ?_, by simp, by decide, ?_, .cons (by decide) .nil⟩
-  · rw [← b_e_type_checker_reflects_typing]; kernel_rfl
-  · rw [← b_e_type_checker_reflects_typing]; kernel_rfl
-  · rw [← b_e_type_checker_reflects_typing]; kernel_rfl
-  · simp only [List.mem_singleton, forall_eq]
-    refine ⟨by decide, ?_, by decide, by decide⟩
-    rw [← b_e_type_checker_reflects_typing]; kernel_rfl
-  · repeat' first | exact .nil | refine .cons (by decide) ?_
+  apply (validateModule_iff _ ⟨_, _⟩).mp
+  kernel_rfl
 
 @[rocq_alias iriswasm.stack_client.module_restrictions_client]
 theorem module_restrictions_client : ModuleRestrictions clientModule :=
@@ -173,7 +165,8 @@ private theorem square_body_spec (E : CoPset) (u : I32) (f : Frame)
   subst hw
   simp only [ofVal, vToEList, List.map, List.cons_append, List.nil_append]
   iapply wp_wand_s $$ [Hf]
-  · iapply wp_binop (Φ := fun w => iprop(⌜w = .immV [.int32 (Wasm.Int.imul u u)]⌝)) rfl $$ Hf
+  · iapply wp_binop (Φ := fun w => iprop(⌜w = .immV [.int32 (Wasm.Int.imul u u)]⌝))
+      rfl rfl .i32Agree rfl $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   iframe; ipureintro; exact hw
@@ -304,7 +297,8 @@ private theorem main_spec (E : CoPset) (inst i0 : Instance) (idf0 idf3 idf4 idf5
     isplitr
     · iintro ⟨%h, -⟩; cases h
     isplitl [Hf]
-    · iapply wp_relop (Φ := fun w => iprop(⌜w = .immV [.int32 (wasmBool true)]⌝)) rfl $$ Hf
+    · iapply wp_relop (Φ := fun w => iprop(⌜w = .immV [.int32 (wasmBool true)]⌝))
+        rfl rfl .i32Agree rfl $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -320,8 +314,8 @@ private theorem main_spec (E : CoPset) (inst i0 : Instance) (idf0 idf3 idf4 idf5
         g ↦[wg] ({ mut_ := .mut, val := (.int32 (Wasm.Int.intOfZ (-1)) : Value) } : Global)) ∗
         ↪[frame] (⟨(nZeros [.i32]).set 0 ((.int32 (Wasm.Int.intOfZ (-1)) : Value)), inst⟩ : Frame))) (by decide) $$ Hf
       inext; iintro Hf
-      rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) _)]]
-      iapply wp_block (n := 0) (t1s := []) rfl rfl rfl rfl $$ Hf
+      rw [← List.nil_append [AdministrativeInstruction.basic (.block (.result none) _)]]
+      iapply wp_block (bt := .result none) (n := 0) (t1s := []) rfl rfl rfl rfl rfl $$ Hf
       inext; iintro Hf
       iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
       iapply wp_label_push_nil
@@ -384,7 +378,7 @@ private theorem main_spec (E : CoPset) (inst i0 : Instance) (idf0 idf3 idf4 idf5
     · iintro ⟨%h, -⟩; cases h
     isplitl [Hf]
     · iapply wp_relop (Φ := fun w => iprop(⌜w = .immV [.int32 (wasmBool false)]⌝))
-        (relop_eq_m1 k hk) $$ Hf
+        rfl rfl .i32Agree (relop_eq_m1 k hk) $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -396,8 +390,8 @@ private theorem main_spec (E : CoPset) (inst i0 : Instance) (idf0 idf3 idf4 idf5
     isplitl [Hf]
     · iapply wp_if_false (c := wasmBool false) rfl $$ Hf
       inext; iintro Hf
-      rw [← List.nil_append [AdministrativeInstruction.basic (.block (.tf [] []) [])]]
-      iapply wp_block (n := 0) (t1s := []) rfl rfl rfl rfl $$ Hf
+      rw [← List.nil_append [AdministrativeInstruction.basic (.block (.result none) [])]]
+      iapply wp_block (bt := .result none) (n := 0) (t1s := []) rfl rfl rfl rfl rfl $$ Hf
       inext; iintro Hf
       iapply wp_label_value (v := []) rfl $$ Hf
       inext; ipureintro; rfl
@@ -580,7 +574,7 @@ private theorem main_spec (E : CoPset) (inst i0 : Instance) (idf0 idf3 idf4 idf5
     · iintro ⟨%h, -⟩; cases h
     isplitl [Hf]
     · iapply wp_binop (Φ := fun w => iprop(⌜w = .immV [.int32 (Wasm.Int.intOfZ 20)]⌝))
-        sub_squares $$ Hf
+        rfl rfl .i32Agree sub_squares $$ Hf
       inext; ipureintro; rfl
     iintro %w ⟨%hw, Hf⟩
     subst hw
@@ -706,6 +700,7 @@ theorem StackClient.instantiate_stack_client_spec (E : CoPset) (vis_addrs : List
         intro e he
         simp only [clientModule, List.mem_singleton] at he
         subst he
+        rw [Tableinst.length_data] at Htab
         simp [assertConst1I32, extTabs, stackInstVis, i32const, LawfulPartialMap.get?_insert,
           natOfInt]
         omega
@@ -777,9 +772,9 @@ theorem StackClient.instantiate_stack_client_spec (E : CoPset) (vis_addrs : List
     LawfulPartialMap.get?_insert] at htab'
   have h0 : tab'.data[0]? = some (some fs) := by
     subst htab'
-    obtain ⟨d, mx⟩ := tab
-    cases d with
-    | nil => simp at Htab
+    rw [data_tableInitReplaceSingle]
+    cases h : tab.data with
+    | nil => simp [h] at Htab
     | cons x xs => rfl
   simp only [tabBlock]
   icases Htabb with ⟨Hbig, -, -⟩

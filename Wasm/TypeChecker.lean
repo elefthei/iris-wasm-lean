@@ -138,16 +138,10 @@ def cTypesAgree (ct : CheckerType) (ts' : List ValueType) : Bool :=
   | .bot => false
 
 @[rocq_alias iriswasm.is_int]
-def isInt (t : ValueType) : Bool :=
-  match t with
-  | .i32 | .i64 => true
-  | .f32 | .f64 => false
+abbrev isInt := isIntT
 
 @[rocq_alias iriswasm.is_float]
-def isFloat (t : ValueType) : Bool :=
-  match t with
-  | .i32 | .i64 => false
-  | .f32 | .f64 => true
+abbrev isFloat := isFloatT
 
 mutual
 /-- Coq `check_single`. Coq's local `b_e_type_checker` (a `fold_left` of `check_single`) is
@@ -160,42 +154,46 @@ def checkSingle (C : TContext) (ts : CheckerType) (be : BasicInstruction) : Chec
   match be with
   | .const v => typeUpdate ts [] (.type [typeof v])
   | .unop t op =>
-    match op with
-    | .i _ => if isInt t then typeUpdate ts [.some t] (.type [t]) else .bot
-    | .f _ => if isFloat t then typeUpdate ts [.some t] (.type [t]) else .bot
+    if unopTypeOK t op then typeUpdate ts [.some t] (.type [t]) else .bot
   | .binop t op =>
-    match op with
-    | .i _ => if isInt t then typeUpdate ts [.some t, .some t] (.type [t]) else .bot
-    | .f _ => if isFloat t then typeUpdate ts [.some t, .some t] (.type [t]) else .bot
-  | .testop t _ =>
-    if isIntT t then typeUpdate ts [.some t] (.type [.i32]) else .bot
+    if binopTypeOK t op then typeUpdate ts [.some t, .some t] (.type [t]) else .bot
+  | .testop t op =>
+    if testopTypeOK t op then typeUpdate ts [.some t] (.type [.i32]) else .bot
   | .relop t op =>
-    match op with
-    | .i _ => if isInt t then typeUpdate ts [.some t, .some t] (.type [.i32]) else .bot
-    | .f _ => if isFloat t then typeUpdate ts [.some t, .some t] (.type [.i32]) else .bot
+    if relopTypeOK t op then typeUpdate ts [.some t, .some t] (.type [.i32]) else .bot
   | .cvtop t1 .convert t2 sx =>
     if convertCond t1 t2 sx then typeUpdate ts [.some t2] (.type [t1]) else .bot
   | .cvtop t1 .reinterpret t2 sxo =>
-    if t1 != t2 && lengthT t1 == lengthT t2 && sxo == none
+    if reinterpretCond t1 t2 && sxo == none
     then typeUpdate ts [.some t2] (.type [t1])
+    else .bot
+  | .cvtop dst .truncSat src sx =>
+    if isIntT dst && isFloatT src && sx.isSome then typeUpdate ts [.some src] (.type [dst])
     else .bot
   | .unreachable => typeUpdate ts [] (.topType [])
   | .nop => ts
   | .drop => typeUpdate ts [.any] (.type [])
   | .select => typeUpdateSelect ts
-  | .block (.tf tn tm) es =>
-    if cTypesAgree (check (updLabel C ([tm] ++ C.label)) es (.type tn)) tm
-    then typeUpdate ts (toCtList tn) (.type tm)
-    else .bot
-  | .loop (.tf tn tm) es =>
-    if cTypesAgree (check (updLabel C ([tn] ++ C.label)) es (.type tn)) tm
-    then typeUpdate ts (toCtList tn) (.type tm)
-    else .bot
-  | .if_ (.tf tn tm) es1 es2 =>
-    if cTypesAgree (check (updLabel C ([tm] ++ C.label)) es1 (.type tn)) tm
-        && cTypesAgree (check (updLabel C ([tm] ++ C.label)) es2 (.type tn)) tm
-    then typeUpdate ts (toCtList (tn ++ [.i32])) (.type tm)
-    else .bot
+  | .vbitselect => typeUpdate ts [.some .v128, .some .v128, .some .v128] (.type [.v128])
+  | .block bt es =>
+    match expandBlockType C.typesT bt with
+    | some (.tf tn tm) =>
+      if cTypesAgree (check (updLabel C ([tm] ++ C.label)) es (.type tn)) tm
+      then typeUpdate ts (toCtList tn) (.type tm) else .bot
+    | none => .bot
+  | .loop bt es =>
+    match expandBlockType C.typesT bt with
+    | some (.tf tn tm) =>
+      if cTypesAgree (check (updLabel C ([tn] ++ C.label)) es (.type tn)) tm
+      then typeUpdate ts (toCtList tn) (.type tm) else .bot
+    | none => .bot
+  | .if_ bt es1 es2 =>
+    match expandBlockType C.typesT bt with
+    | some (.tf tn tm) =>
+      if cTypesAgree (check (updLabel C ([tm] ++ C.label)) es1 (.type tn)) tm
+          && cTypesAgree (check (updLabel C ([tm] ++ C.label)) es2 (.type tn)) tm
+      then typeUpdate ts (toCtList (tn ++ [.i32])) (.type tm) else .bot
+    | none => .bot
   | .br i =>
     if i < C.label.length then
       match C.label[i]? with
@@ -258,18 +256,24 @@ def checkSingle (C : TContext) (ts : CheckerType) (be : BasicInstruction) : Chec
       | none => .bot
       | some xx => if isMut xx then typeUpdate ts [.some xx.t] (.type []) else .bot
     else .bot
-  | .load t tpSx a _ =>
-    if C.memory != [] && loadStoreTBounds a (optionProjl tpSx) t
-    then typeUpdate ts [.some .i32] (.type [t])
-    else .bot
-  | .store t tp a _ =>
-    if C.memory != [] && loadStoreTBounds a tp t
-    then typeUpdate ts [.some .i32, .some t] (.type [])
-    else .bot
-  | .currentMemory =>
-    if C.memory != [] then typeUpdate ts [] (.type [.i32]) else .bot
-  | .growMemory =>
-    if C.memory != [] then typeUpdate ts [.some .i32] (.type [.i32]) else .bot
+  | .load t tpSx ma =>
+    match C.memory[ma.memory]? with
+    | some mt => if loadStoreTBounds ma.align (optionProjl tpSx) t && ma.offset < 2^mt.address.width
+      then typeUpdate ts [.some mt.address.valueType] (.type [t]) else .bot
+    | none => .bot
+  | .store t tp ma =>
+    match C.memory[ma.memory]? with
+    | some mt => if loadStoreTBounds ma.align tp t && ma.offset < 2^mt.address.width
+      then typeUpdate ts [.some mt.address.valueType, .some t] (.type []) else .bot
+    | none => .bot
+  | .currentMemory x =>
+    match C.memory[x]? with
+    | some mt => typeUpdate ts [] (.type [mt.address.valueType])
+    | none => .bot
+  | .growMemory x =>
+    match C.memory[x]? with
+    | some mt => typeUpdate ts [.some mt.address.valueType] (.type [mt.address.valueType])
+    | none => .bot
 
 /-- Coq `check C es ts := fold_left (check_single C) es ts`. -/
 @[rocq_alias iriswasm.check]

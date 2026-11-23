@@ -29,7 +29,7 @@ theorem myadd_spec (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (f0 : Fr
     ⊢ iprop(↪[frame] f0 -∗ Φ (.immV [xx 5]) -∗ WP myAdd @ s ; E {{ v, Φ v ∗ ↪[frame] f0 }}) := by
   iintro Hf HP
   unfold myAdd
-  iapply wp_binop (v := xx 5) (by decide) $$ Hf
+  iapply wp_binop (v := xx 5) rfl rfl .i32Agree (by decide) $$ Hf
   inext
   iexact HP
 
@@ -49,12 +49,12 @@ theorem myadd2_spec (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (f0 : F
   isplitl []
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf0]
-  · iapply wp_binop (v := xx 3) (by decide) $$ Hf0
+  · iapply wp_binop (v := xx 3) rfl rfl .i32Agree (by decide) $$ Hf0
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf0⟩
   subst hw
   simp only [ofVal, vToEList, List.map_cons, List.map_nil, List.cons_append, List.nil_append]
-  iapply wp_binop (v := xx 5) (by decide) $$ Hf0
+  iapply wp_binop (v := xx 5) rfl rfl .i32Agree (by decide) $$ Hf0
   inext
   iexact HΦ
 
@@ -86,14 +86,13 @@ theorem iRewrite_nil_r_ctx (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) 
 
 /-! Examples of blocks that return normally. -/
 
-@[rocq_alias iriswasm.label_check_easy]
-theorem label_check_easy (f0 : Frame) :
+theorem label_check_easy (f0 : Frame) (hsig : f0.inst.types[0]? = some (.tf [] [.i32, .i32])) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32, .i32]) [.const (xx 2), .const (xx 3)])] : Expr)
+      WP ([.basic (.block (.index 0) [.const (xx 2), .const (xx 3)])] : Expr)
         {{ v, ⌜v = Val.immV [xx 2, xx 3]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf0
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf0 <;> try (first | decide | rfl)
+  iapply wp_block (bt := .index 0) ?_ ?_ ?_ ?_ hsig $$ Hf0 <;> try (first | decide | rfl)
   inext
   iintro Hf0
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
@@ -105,15 +104,14 @@ theorem label_check_easy (f0 : Frame) :
   iframe
   ipureintro; rfl
 
-@[rocq_alias iriswasm.label_check_easy']
-theorem label_check_easy' (f0 : Frame) :
+theorem label_check_easy' (f0 : Frame) (hsig : f0.inst.types[0]? = some (.tf [] [.i32, .i32])) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32, .i32])
-            [.block (.tf [] [.i32, .i32]) [.const (xx 2), .const (xx 3)]])] : Expr)
+      WP ([.basic (.block (.index 0)
+            [.block (.index 0) [.const (xx 2), .const (xx 3)]])] : Expr)
         {{ v, ⌜v = Val.immV [xx 2, xx 3]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf0
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf0 <;> try (first | decide | rfl)
+  iapply wp_block (bt := .index 0) ?_ ?_ ?_ ?_ hsig $$ Hf0 <;> try (first | decide | rfl)
   inext
   iintro Hf0
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
@@ -124,7 +122,7 @@ theorem label_check_easy' (f0 : Frame) :
   isplitr
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf0]
-  · iapply label_check_easy; iexact Hf0
+  · iapply label_check_easy f0 hsig; iexact Hf0
   iintro %w ⟨%hw, Hf0⟩
   subst hw
   simp only [ofVal, vToEList, List.map_cons, List.map_nil, List.cons_append, List.nil_append]
@@ -137,18 +135,18 @@ theorem label_check_easy' (f0 : Frame) :
 @[rocq_alias iriswasm.br_check_bind_return]
 theorem br_check_bind_return (f0 : Frame) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32])
-            [.block (.tf [] []) [.const (xx 3), .br 1]])] : Expr)
+      WP ([.basic (.block (.result (some .i32))
+            [.block (.result none) [.const (xx 3), .br 1]])] : Expr)
         {{ v, ⌜v = Val.immV [xx 3]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
   iapply iRewrite_nil_l_ctx
-  iapply wp_block_ctx ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block_ctx (bt := .result none) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
@@ -162,18 +160,18 @@ theorem br_check_bind_return (f0 : Frame) :
 @[rocq_alias iriswasm.br_check_bind_return_2]
 theorem br_check_bind_return_2 (f0 : Frame) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32])
-            [.block (.tf [] []) [.const (xx 2), .const (xx 3), .br 1]])] : Expr)
+      WP ([.basic (.block (.result (some .i32))
+            [.block (.result none) [.const (xx 2), .const (xx 3), .br 1]])] : Expr)
         {{ v, ⌜v = Val.immV [xx 3]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
   iapply iRewrite_nil_l_ctx
-  iapply wp_block_ctx ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block_ctx (bt := .result none) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
@@ -191,19 +189,19 @@ theorem br_check_bind_return_2 (f0 : Frame) :
 @[rocq_alias iriswasm.br_check_bind_return_3]
 theorem br_check_bind_return_3 (f0 : Frame) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32])
-            [.block (.tf [] [])
+      WP ([.basic (.block (.result (some .i32))
+            [.block (.result none)
               [.const (xx 2), .const (xx 3), .binop .i32 (.i .add), .br 1]])] : Expr)
         {{ v, ⌜v = Val.immV [xx 5]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
   iapply iRewrite_nil_l_ctx
-  iapply wp_block_ctx ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block_ctx (bt := .result none) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply wp_label_push_nil
   simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
@@ -212,7 +210,7 @@ theorem br_check_bind_return_3 (f0 : Frame) :
   isplitr
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
-  · iapply wp_binop (v := xx 5) (by decide) $$ Hf
+  · iapply wp_binop (v := xx 5) rfl rfl .i32Agree (by decide) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -227,17 +225,17 @@ theorem br_check_bind_return_3 (f0 : Frame) :
 @[rocq_alias iriswasm.br_check_bind_return_4]
 theorem br_check_bind_return_4 (f0 : Frame) :
     (iprop(↪[frame] f0) : IProp GF) ⊢
-      WP ([.basic (.block (.tf [] [.i32]) -- this block returns normally
+      WP ([.basic (.block (.result (some .i32)) -- this block returns normally
             [.const (xx 1),
-             .block (.tf [] [.i32]) -- this block gets br'ed to
-               [.block (.tf [] []) -- this block will never return
+             .block (.result (some .i32)) -- this block gets br'ed to
+               [.block (.result none) -- this block will never return
                  [.const (xx 2), .const (xx 3), .binop .i32 (.i .add), .br 1,
                   .binop .i32 (.i .add)]], -- this expression gets stuck without br
              .binop .i32 (.i .add)])] : Expr) -- reduces only after the previous block
         {{ v, ⌜v = Val.immV [xx 6]⌝ ∗ ↪[frame] f0 }} := by
   iintro Hf
   iapply iRewrite_nil_l
-  iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+  iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
   inext; iintro Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
@@ -257,13 +255,13 @@ theorem br_check_bind_return_4 (f0 : Frame) :
     · iintro ⟨%H, -⟩; cases H
     isplitl [Hf]
     · iapply iRewrite_nil_l
-      iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+      iapply wp_block (bt := .result (some .i32)) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
       inext; iintro Hf
       iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
       iapply wp_label_push_nil
       simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
       iapply iRewrite_nil_l_ctx
-      iapply wp_block_ctx ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
+      iapply wp_block_ctx (bt := .result none) ?_ ?_ ?_ ?_ rfl $$ Hf <;> try (first | decide | rfl)
       inext; iintro Hf
       iapply wp_label_push_nil
       simp only [pushBase, toEList, List.map_cons, List.map_nil, List.nil_append]
@@ -272,7 +270,7 @@ theorem br_check_bind_return_4 (f0 : Frame) :
       isplitr
       · iintro ⟨%H, -⟩; cases H
       isplitl [Hf]
-      · iapply wp_binop (v := xx 5) (by decide) $$ Hf
+      · iapply wp_binop (v := xx 5) rfl rfl .i32Agree (by decide) $$ Hf
         inext; ipureintro; rfl
       iintro %w ⟨%hw, Hf⟩
       subst hw
@@ -291,7 +289,7 @@ theorem br_check_bind_return_4 (f0 : Frame) :
     simp only [ofVal, vToEList, List.map_cons, List.map_nil, List.cons_append, List.nil_append]
     iapply wp_base
     simp only [List.cons_append, List.nil_append]
-    iapply wp_binop (v := xx 6) (by decide) $$ Hf
+    iapply wp_binop (v := xx 6) rfl rfl .i32Agree (by decide) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
@@ -307,13 +305,14 @@ theorem br_check_bind_return_4 (f0 : Frame) :
 /-! Module 1 -/
 
 @[rocq_alias iriswasm.f1_instrs]
-def f1Instrs : List BasicInstruction := [.const (xx 0), .load .i32 none 0 0]
+def f1Instrs : List BasicInstruction := [.const (xx 0), .load .i32 none ⟨0, 0, 0⟩]
 
 @[rocq_alias iriswasm.f1]
 def f1 : Expr := toEList f1Instrs
 
 @[rocq_alias iriswasm.store42_instrs]
-def store42Instrs : List BasicInstruction := [.const (xx 0), .const (xx 42), .store .i32 none 0 0]
+def store42Instrs : List BasicInstruction :=
+  [.const (xx 0), .const (xx 42), .store .i32 none ⟨0, 0, 0⟩]
 
 @[rocq_alias iriswasm.store42]
 def store42 : Expr := toEList store42Instrs
@@ -321,7 +320,8 @@ def store42 : Expr := toEList store42Instrs
 /-! Module 2 -/
 
 @[rocq_alias iriswasm.store11_instrs]
-def store11Instrs : List BasicInstruction := [.const (xx 0), .const (xx 11), .store .i32 none 0 0]
+def store11Instrs : List BasicInstruction :=
+  [.const (xx 0), .const (xx 11), .store .i32 none ⟨0, 0, 0⟩]
 
 @[rocq_alias iriswasm.store11]
 def store11 : Expr := toEList store11Instrs
@@ -342,9 +342,10 @@ theorem f1_spec (f : Frame) (n : Nat) (v : Value) :
       WP f1 {{ w, (⌜w = Val.immV [v]⌝ ∗ n ↦[wms][ 0 ] (bits v)) ∗ ↪[frame] f }}) : IProp GF) := by
   intro ht hn
   iintro Hf Hn
-  have H := wp_load (GF := GF) (fun w => iprop(⌜w = Val.immV [v]⌝)) .NotStuck ⊤ .i32 v 0 0
-    (Wasm.Int.intOfZ 0) n f ht hn
-  rw [show Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 0) + 0 = 0 from rfl] at H
+  have H := wp_load (GF := GF) (x := 0) (fun w => iprop(⌜w = Val.immV [v]⌝))
+    .NotStuck ⊤ .i32 v 0 0
+    (.i32 (Wasm.Int.intOfZ 0)) n f ht hn
+  rw [show (AddressOperand.i32 (Wasm.Int.intOfZ 0)).unsigned + 0 = 0 from rfl] at H
   simp only [f1, f1Instrs, toEList, List.map_cons, List.map_nil, xx] at H ⊢
   iapply H
   iframe
@@ -358,10 +359,11 @@ theorem store42_spec (f : Frame) (n : Nat) (c : I32) :
       : IProp GF) := by
   intro hn
   iintro Hf Hn
-  have H := wp_store (GF := GF) (fun w => iprop(⌜w = Val.immV []⌝)) .NotStuck ⊤ .i32 (xx 42)
-    (bits (.int32 c)) 0 0 (Wasm.Int.intOfZ 0) n f rfl
+  have H := wp_store (GF := GF) (x := 0) (fun w => iprop(⌜w = Val.immV []⌝))
+    .NotStuck ⊤ .i32 (xx 42)
+    (bits (.int32 c)) 0 0 (.i32 (Wasm.Int.intOfZ 0)) n f rfl
     (by simp [bits, lengthT, serialiseI32, length_encodeInt]) hn
-  rw [show Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 0) + 0 = 0 from rfl] at H
+  rw [show (AddressOperand.i32 (Wasm.Int.intOfZ 0)).unsigned + 0 = 0 from rfl] at H
   simp only [store42, store42Instrs, toEList, List.map_cons, List.map_nil, xx] at H ⊢
   iapply H
   iframe
@@ -375,10 +377,11 @@ theorem store11_spec (f : Frame) (n : Nat) (c : I32) :
       : IProp GF) := by
   intro hn
   iintro Hf Hn
-  have H := wp_store (GF := GF) (fun w => iprop(⌜w = Val.immV []⌝)) .NotStuck ⊤ .i32 (xx 11)
-    (bits (.int32 c)) 0 0 (Wasm.Int.intOfZ 0) n f rfl
+  have H := wp_store (GF := GF) (x := 0) (fun w => iprop(⌜w = Val.immV []⌝))
+    .NotStuck ⊤ .i32 (xx 11)
+    (bits (.int32 c)) 0 0 (.i32 (Wasm.Int.intOfZ 0)) n f rfl
     (by simp [bits, lengthT, serialiseI32, length_encodeInt]) hn
-  rw [show Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) 0) + 0 = 0 from rfl] at H
+  rw [show (AddressOperand.i32 (Wasm.Int.intOfZ 0)).unsigned + 0 = 0 from rfl] at H
   simp only [store11, store11Instrs, toEList, List.map_cons, List.map_nil, xx] at H ⊢
   iapply H
   iframe
@@ -416,16 +419,13 @@ theorem doIt_spec (t : Nat) (i2 : Instance) (f0 : Frame) (a : Nat) (v : Value) (
     _ _ 0 (.base [] []) 1 fi f0 fi ?_
   · intro LI hLI
     simp [lfilled, lfill, constList] at hLI
-    subst hLI; simp [toVal, toValInstr, mergeValuesList]
+    subst hLI; exact toVal_native_frame_none _ _ _
   isplitr
   · iintro ⟨%H, -⟩; cases H
   isplitl [Hf]
   · iexact Hf
   isplitl [Hn]
   · iintro Hf
-    take_drop_app_rewrite 0
-    iapply wp_block ?_ ?_ ?_ ?_ $$ Hf <;> try (first | decide | rfl)
-    inext; iintro Hf
     iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
     iapply wp_label_push_nil
     simp only [pushBase, List.nil_append]

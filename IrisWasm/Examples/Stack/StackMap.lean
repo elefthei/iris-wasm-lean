@@ -22,7 +22,7 @@ address already dealt with), local 3 the loop upper bound (the stack top pointer
 @[rocq_alias iriswasm.map_initialise]
 def mapInitialise : List BasicInstruction :=
   [ .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .setLocal 3,
     .getLocal 0,
     .setLocal 2 ]
@@ -41,16 +41,16 @@ def mapLoopBody : List BasicInstruction :=
     .teeLocal 2,
     -- Load the stack element, apply the function and store the result back to the stack
     .getLocal 2,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .getLocal 1,
     .callIndirect 1,
-    .store .i32 none 0 0,
+    .store .i32 none ⟨0, 0, 0⟩,
     -- Keep the loop alive
     .br 0 ]
 
 @[rocq_alias iriswasm.map_op]
 def mapOp : List BasicInstruction :=
-  mapInitialise ++ [ .block (.tf [] []) [.loop (.tf [] []) mapLoopBody] ]
+  mapInitialise ++ [ .block (.result none) [.loop (.result none) mapLoopBody] ]
 
 @[rocq_alias iriswasm.stack_map]
 def stackMap : List BasicInstruction :=
@@ -150,7 +150,7 @@ theorem map_loop_body_prefix (f : Frame) (s : List I32) (v n j : Nat) (sv fn : I
         ↪[frame] (⟨f.locs.set 2 (valueOfUint (v + s.length * 4 - 4 * j)), f.inst⟩ : Frame) -∗
         WP ([.basic (.const (valueOfUint (v + s.length * 4 - 4 * j))),
           .basic (.const (.int32 sv)), .basic (.const (.int32 fn)), .basic (.callIndirect 1),
-          .basic (.store .i32 none 0 0), .basic (.br 0)] : Expr) @ E {{ Ξ }}) -∗
+          .basic (.store .i32 none ⟨0, 0, 0⟩), .basic (.br 0)] : Expr) @ E {{ Ξ }}) -∗
       WP (toEList mapLoopBody : Expr) @ E {{ Ξ }} : IProp GF) := by
   iintro Hs Hf HK
   icases stack_pure v s n $$ Hs with ⟨%hdiv, %hvb, %hlens, Hs⟩
@@ -172,8 +172,8 @@ theorem map_loop_body_prefix (f : Frame) (s : List I32) (v n j : Nat) (sv fn : I
   iintro Hf
   take_drop_app_rewrite 3
   iapply wp_seq_imm [.int32 (wasmBool false)] iprop(↪[frame] f) $$ [Hf]
-  · iapply wp_relop (op := .i .eq) (b := false) (relop_eq_valueOfUint_ne (by omega) (by omega)
-      (by omega)) $$ Hf
+  · iapply wp_relop (op := .i .eq) (b := false) rfl rfl .i32Agree
+      (relop_eq_valueOfUint_ne (by omega) (by omega) (by omega)) $$ Hf
     inext; ipureintro; rfl
   iintro Hf
   take_drop_app_rewrite 2
@@ -191,7 +191,7 @@ theorem map_loop_body_prefix (f : Frame) (s : List I32) (v n j : Nat) (sv fn : I
   iapply wp_seq_imm [valueOfUint (v + s.length * 4 - 4 * j)] iprop(↪[frame] f) $$ [Hf]
   · have hb := binop_add4_valueOfUint (v + s.length * 4 - 4 * j - 4)
     rw [show v + s.length * 4 - 4 * j - 4 + 4 = v + s.length * 4 - 4 * j by omega] at hb
-    iapply wp_binop (t := .i32) hb $$ Hf
+    iapply wp_binop (t := .i32) rfl rfl .i32Agree hb $$ Hf
     inext; ipureintro; rfl
   iintro Hf
   take_drop_app_rewrite 2
@@ -244,7 +244,7 @@ theorem map_loop_body_suffix (f1 : Frame) (s : List I32) (v n j : Nat) (sv v0 : 
     (hmem : f1.inst.memory[0]? = some n) (hj : j < s.length) (hsv : s[j]? = some sv) :
     ⊢ (isStack v s n -∗ ↪[frame] f1 -∗
       WP ([.basic (.const (valueOfUint (v + s.length * 4 - 4 * j))), .basic (.const (.int32 v0)),
-          .basic (.store .i32 none 0 0), .basic (.br 0)] : Expr) @ E
+          .basic (.store .i32 none ⟨0, 0, 0⟩), .basic (.br 0)] : Expr) @ E
         {{ w, ⌜w = .brV (ValidHoled.base [] [] : ValidHoled 0)⌝ ∗ isStack v (s.set j v0) n ∗
           ↪[frame] f1 }} : IProp GF) := by
   iintro Hs Hf
@@ -336,7 +336,7 @@ theorem spec_map_loop_body_terminate (f : Frame) (s : List I32) (v n : Nat) (E :
   iintro Hf
   take_drop_app_rewrite 3
   iapply wp_seq_imm [.int32 (wasmBool true)] iprop(↪[frame] f) $$ [Hf]
-  · iapply wp_relop (op := .i .eq) (b := true)
+  · iapply wp_relop (op := .i .eq) (b := true) rfl rfl .i32Agree
       (by simp [appRelop, appRelopI, valueOfInt, Wasm.Int.ieq])
       $$ Hf
     inext; ipureintro; rfl
@@ -441,7 +441,7 @@ theorem spec_map_loop_body_continue (f : Frame) (s : List I32) (v n : Nat) (E : 
 
 /-- The two enclosing labels (`block` and `loop`) of the loop body in `map_op`. -/
 local notation "mapLoopLh" => pushBase (Lholed.rec_ [] 0 [] (Lholed.base [] []) []) 0
-  [AdministrativeInstruction.basic (BasicInstruction.loop (FunctionType.tf [] []) mapLoopBody)]
+  [AdministrativeInstruction.basic (BasicInstruction.loop (CoreTypes.BlockType.result none) mapLoopBody)]
   [] []
 
 /-- `br 1` out of the loop body exits the `block`. -/
@@ -472,9 +472,9 @@ theorem map_loop_continue (f : Frame) (E : CoPset) (Ξ : Val → IProp GF) :
     rfl rfl $$ Hf
   iintro !> Hf
   isimp only [List.nil_append, List.append_nil]
-  rw [show ([AdministrativeInstruction.basic (.loop (.tf [] []) mapLoopBody)] : Expr) =
-    [] ++ [.basic (.loop (.tf [] []) mapLoopBody)] from rfl]
-  iapply wp_loop_ctx rfl rfl rfl rfl $$ Hf
+  rw [show ([AdministrativeInstruction.basic (.loop (.result none) mapLoopBody)] : Expr) =
+    [] ++ [.basic (.loop (.result none) mapLoopBody)] from rfl]
+  iapply wp_loop_ctx (bt := .result none) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply wp_label_push_nil
   simp only [List.nil_append, List.length_nil, Nat.reduceAdd, Nat.reduceSub]
@@ -514,7 +514,7 @@ theorem spec_map_loop_j (f : Frame) (s : List I32) (v n : Nat) (E : CoPset) (j :
           ↪[frame] f) -∗
       WP (toEList mapLoopBody : Expr) @ E CTX 2 ;
         (pushBase (.rec_ [] 0 [] (.base [] []) []) 0
-          [.basic (.loop (.tf [] []) mapLoopBody)] [] [])
+          [.basic (.loop (.result none) mapLoopBody)] [] [])
         {{ w, ⌜w = .immV []⌝ ∗
           (∃ s', isStack v s' n ∗ stackAll2 s s' Ψ) ∗
           (∃ f1, ↪[frame] f1 ∗ ⌜f.inst = f1.inst⌝) ∗
@@ -634,7 +634,7 @@ theorem spec_stack_map (f0 : Frame) (n : Immediate) (f : I32) (v : Nat) (s : Lis
   let fr : Frame :=
     ⟨(f0.locs.set 3 (valueOfUint (v + s.length * 4))).set 2 (valueOfUint v), f0.inst⟩
   rw [show (toEList mapOp : Expr) = toEList mapInitialise ++
-    [.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])] by simp [mapOp, toEList]]
+    [.basic (.block (.result none) [.loop (.result none) mapLoopBody])] by simp [mapOp, toEList]]
   isimp only [vToEList, List.map_nil, List.nil_append]
   iapply wp_seq_imm [] iprop(isStack v s n ∗ ↪[frame] fr) $$ [Hs Hf]
   · iapply spec_map_initialise f0 s v n E $$ [Hs Hf]
@@ -643,16 +643,16 @@ theorem spec_stack_map (f0 : Frame) (n : Immediate) (f : I32) (v : Nat) (s : Lis
     iframe; ipureintro; exact hw
   iintro ⟨Hs, Hf⟩
   isimp only [vToEList, List.map_nil, List.nil_append]
-  rw [show ([AdministrativeInstruction.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])]
-    : Expr) = [] ++ [.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])] from rfl]
-  iapply wp_block rfl rfl rfl rfl $$ Hf
+  rw [show ([AdministrativeInstruction.basic (.block (.result none) [.loop (.result none) mapLoopBody])]
+    : Expr) = [] ++ [.basic (.block (.result none) [.loop (.result none) mapLoopBody])] from rfl]
+  iapply wp_block (bt := .result none) (m := 0) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [List.nil_append, toEList, List.map_cons, List.map_nil]
-  rw [show ([AdministrativeInstruction.basic (.loop (.tf [] []) mapLoopBody)] : Expr) =
-    [] ++ [.basic (.loop (.tf [] []) mapLoopBody)] from rfl]
-  iapply wp_loop_ctx rfl rfl rfl rfl $$ Hf
+  rw [show ([AdministrativeInstruction.basic (.loop (.result none) mapLoopBody)] : Expr) =
+    [] ++ [.basic (.loop (.result none) mapLoopBody)] from rfl]
+  iapply wp_loop_ctx (bt := .result none) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply wp_label_push_nil
   simp only [List.nil_append, List.length_nil, Nat.reduceAdd]

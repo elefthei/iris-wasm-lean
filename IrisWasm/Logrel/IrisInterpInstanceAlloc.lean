@@ -170,18 +170,16 @@ theorem interp_instance_pre_create (τctx : TContext) (i : Instance)
     · iexact Hinv
     iapply interp_closure_pre_ind τctx i tf cl fimps kf hl hnil $$ IH Hcl
   isplitr
-  · rcases h1 : τctx.table[0]? with _ | τt
-    · dsimp only; ipureintro; trivial
-    rcases h2 : i.tab[0]? with _ | a
-    · dsimp only; iexact Htable
-    dsimp only
-    icases Htable with ⟨%tableSize, %tableLim, %hlim, #Hlim, #Hsize, #Ht⟩
+  · iapply BigSepL2.bigSepL2_impl $$ Htable
+    imodintro
+    unfold interpTableAt
+    iintro %j %a %τt %_ %_ ⟨%tableSize, %tableLim, %hlim, Hlim, Hsize, Ht⟩
     iexists tableSize, tableLim
     isplitr
     · ipureintro; exact hlim
-    isplitr
+    isplitl [Hlim]
     · iexact Hlim
-    isplitr
+    isplitl [Hsize]
     · iexact Hsize
     unfold interpTable
     iapply BigSepL.bigSepL_impl $$ Ht
@@ -215,11 +213,13 @@ def importTabNainv (wts : NatMap Tableinst) : IProp GF :=
     ([∗list] j ↦ tabelem ∈ v.data,
       NonAtomicInvariant.inv logrelNais (wtN i j) iprop(i ↦[wt][ j ] tabelem)))
 
-@[rocq_alias iriswasm.import_mem_nainv]
+private instance interpMem_persistent (aw : AddrType) (n : Nat) :
+    Persistent (interpMem (GF := GF) aw n) := by
+  unfold interpMem; infer_instance
+
+#rocq_ignore iriswasm.import_mem_nainv "memory invariants carry the imported memory's address width"
 def importMemNainv (wms : NatMap Memory) : IProp GF :=
-  iprop([∗map] i ↦ v ∈ wms, NonAtomicInvariant.inv logrelNais (wmN i) iprop(∃ (mem : Memory),
-      ([∗list] j ↦ b ∈ mem.data.data, i ↦[wm][ j ] b) ∗ i ↦[wmlength] lengthMem mem) ∗
-    i ↪[wmlimit] v.maxOpt)
+  iprop([∗map] i ↦ v ∈ wms, interpMem v.type.address i ∗ i ↪[wmlimit] v.type.limits.max)
 
 @[rocq_alias iriswasm.import_glob_nainv]
 def importGlobNainv (wgs : NatMap Global) : IProp GF :=
@@ -300,25 +300,27 @@ theorem import_tab_wasm_check_alloc (E : CoPset) (v_imps : List ModuleExport)
   iframe
   ipureintro; exact ⟨Hd, Ht⟩
 
-@[rocq_alias iriswasm.import_mem_wasm_check_alloc]
+private theorem memBlock_alloc (E : CoPset) (k : Nat) (v : Memory) :
+    memBlock (GF := GF) k v ⊢ |={E}=> interpMem v.type.address k ∗ k ↪[wmlimit] v.type.limits.max := by
+  unfold memBlock interpMem
+  iintro ⟨%hs, Hb, Hlen, Hlim⟩
+  ihave Hi := na_alloc_of E (wmN k) iprop(∃ (m : Memory),
+    ⌜WellSized v.type.address (lengthMem m)⌝ ∗ ([∗list] j ↦ b ∈ m.data.data, k ↦[wm][ j ] b) ∗
+    k ↦[wmlength] (v.type.address, lengthMem m)) $$ [Hb Hlen]
+  · iexists v; isplitr
+    · ipureintro; exact hs.wellSized
+    iframe
+  imod Hi
+  imodintro; iframe
+
+#rocq_ignore iriswasm.import_mem_wasm_check_alloc "allocates a width-indexed memory invariant"
 theorem import_mem_wasm_check_alloc (E : CoPset) (v_imps : List ModuleExport)
     (t_imps : List ExternT) (wfs : NatMap Memory) :
     ⊢ importMemWasmCheck (GF := GF) v_imps t_imps wfs ={E}=∗
       importMemWasmCheckInvs v_imps t_imps wfs := by
   unfold importMemWasmCheck importMemWasmCheckInvs importMemResources importMemNainv
   iintro ⟨Hm, %⟨Ht, Hd⟩⟩
-  ihave Hm := BigSepM.bigSepM_mono_of_forall (Ψ := fun k v => iprop(|={E}=>
-    NonAtomicInvariant.inv logrelNais (wmN k) iprop(∃ (mem : Memory),
-      ([∗list] j ↦ b ∈ mem.data.data, k ↦[wm][ j ] b) ∗ k ↦[wmlength] lengthMem mem) ∗
-    k ↪[wmlimit] v.maxOpt))
-    (fun {k v} => by
-      unfold memBlock
-      iintro ⟨Hb, Hlen, Hlim⟩
-      ihave Hi := na_alloc_of E (wmN k) iprop(∃ (mem : Memory),
-        ([∗list] j ↦ b ∈ mem.data.data, k ↦[wm][ j ] b) ∗ k ↦[wmlength] lengthMem mem) $$ [Hb Hlen]
-      · iexists v; iframe
-      imod Hi
-      imodintro; iframe) $$ Hm
+  ihave Hm := BigSepM.bigSepM_mono_of_forall (fun {k v} => memBlock_alloc E k v) $$ Hm
   imod BigSepM.bigSepM_fupd E _ _ $$ Hm with Hm
   iframe
   ipureintro; exact ⟨Hd, Ht⟩
@@ -624,32 +626,20 @@ theorem module_inst_resources_tab_invs_alloc (E : CoPset) (mtabs : List Tableins
       imodintro; iframe) $$ H
   iapply BigSepL2.bigSepL2_fupd E _ _ _ $$ H
 
-@[rocq_alias iriswasm.module_inst_resources_mem_invs]
+#rocq_ignore iriswasm.module_inst_resources_mem_invs "each new memory retains its address width"
 def moduleInstResourcesMemInvs (mmems : List Memory) (inst_m : List Memaddr) : IProp GF :=
-  iprop([∗list] mem;addr ∈ mmems;inst_m, addr ↪[wmlimit] mem.maxOpt ∗
-    NonAtomicInvariant.inv logrelNais (wmN addr) iprop(∃ (mem : Memory),
-      ([∗list] i ↦ b ∈ mem.data.data, addr ↦[wm][ i ] b) ∗ addr ↦[wmlength] lengthMem mem))
+  iprop([∗list] mem;addr ∈ mmems;inst_m,
+    interpMem mem.type.address addr ∗ addr ↪[wmlimit] mem.type.limits.max)
 
-@[rocq_alias iriswasm.module_inst_resources_mem_invs_alloc]
+#rocq_ignore iriswasm.module_inst_resources_mem_invs_alloc "allocates well-sized typed memory invariants"
 theorem module_inst_resources_mem_invs_alloc (E : CoPset) (mmems : List Memory)
     (inst_m : List Memaddr) :
     ⊢ moduleInstResourcesMem (GF := GF) mmems inst_m ={E}=∗
       moduleInstResourcesMemInvs mmems inst_m := by
   unfold moduleInstResourcesMem moduleInstResourcesMemInvs
   iintro H
-  ihave H := BigSepL2.bigSepL2_mono_of_forall (Ψ := fun _ mem addr => iprop(|={E}=>
-    addr ↪[wmlimit] mem.maxOpt ∗
-    NonAtomicInvariant.inv logrelNais (wmN addr) iprop(∃ (mem : Memory),
-      ([∗list] i ↦ b ∈ mem.data.data, addr ↦[wm][ i ] b) ∗ addr ↦[wmlength] lengthMem mem)))
-    (fun {_ mem addr} => by
-      unfold memBlock
-      iintro ⟨Hb, Hlen, Hlim⟩
-      ihave Hi := na_alloc_of E (wmN addr) iprop(∃ (mem : Memory),
-        ([∗list] i ↦ b ∈ mem.data.data, addr ↦[wm][ i ] b) ∗ addr ↦[wmlength] lengthMem mem)
-        $$ [Hb Hlen]
-      · iexists mem; iframe
-      imod Hi
-      imodintro; iframe) $$ H
+  ihave H := BigSepL2.bigSepL2_mono_of_forall
+    (fun {_ mem addr} => memBlock_alloc E addr mem) $$ H
   iapply BigSepL2.bigSepL2_fupd E _ _ _ $$ H
 
 @[rocq_alias iriswasm.module_inst_resources_glob_invs]
@@ -685,19 +675,16 @@ theorem bitzero_interp_value (tg_t : ValueType) :
     ⊢ (interpValue tg_t (bitzero tg_t) : IProp GF) := by
   cases tg_t <;> exact pure_intro ⟨_, rfl⟩
 
-@[rocq_alias iriswasm.module_inst_resources_glob_invs_alloc]
+#rocq_ignore iriswasm.module_inst_resources_glob_invs_alloc "global initializers type in order"
 theorem module_inst_resources_glob_invs_alloc (E : CoPset) (glob_inits : List Global)
     (mglobs : List ModuleGlob) (g_inits : List Value) (inst_g : List Globaladdr)
     (impts : List ExternT) (gts : List GlobalType) :
-    let c' : TContext :=
-      { typesT := [], funcT := [], global := extTGlobs impts, table := [], memory := []
-        local_ := [], label := [], return_ := none }
-    Wasm.List.Forall₂ (ModuleGlobTyping c') mglobs gts →
+    ModuleGlobalsTyping (globalInitContext impts) mglobs gts →
     g_inits.map typeof = mglobs.map (·.type.t) →
     glob_inits = moduleInstGlobalInit (moduleInstBuildGlobals mglobs) g_inits →
     ⊢ moduleInstResourcesGlob (GF := GF) glob_inits inst_g ={E}=∗
       moduleInstResourcesGlobInvs glob_inits inst_g gts := by
-  intro c' hgt htyp hgi
+  intro hgt htyp hgi
   subst hgi
   unfold moduleInstResourcesGlob moduleInstResourcesGlobInvs
   iintro H
@@ -719,8 +706,7 @@ theorem module_inst_resources_glob_invs_alloc (E : CoPset) (glob_inits : List Gl
           obtain ⟨mg, hmg, rfl⟩ := hg0
           refine ⟨mg, hmg, _, rfl, ?_⟩
           cases mg.type.t <;> rfl
-      obtain ⟨gt, hgt', hmt⟩ := forall2_lookup_l hgt hmg
-      obtain ⟨_, rfl, _⟩ := hmt
+      have hgt' : gts[k]? = some mg.type := by simp [hgt.types_eq, hmg]
       subst hg
       iintro Hg
       ihave Hi := na_alloc_of E (wgN addr) iprop(∃ w, addr ↦[wg] (⟨mg.type.mut_, w⟩ : Global) ∗
@@ -992,33 +978,8 @@ theorem repeat_imap_lookup {A B : Type} (a a' : A) (f : Nat → B) (m k : Nat)
 
 /-! ### Module typing, unfolded -/
 
-@[rocq_alias iriswasm.module_typing_body]
-def ModuleTypingBody (m : Module) (impts expts : List ExternT) (fts : List FunctionType)
-    (gts : List GlobalType) : Prop :=
-  match m with
-  | ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩ =>
-    let ifts := extTFuncs impts
-    let its := extTTabs impts
-    let ims := extTMems impts
-    let igs := extTGlobs impts
-    let c : TContext :=
-      { typesT := tfs, funcT := ifts ++ fts, global := igs ++ gts
-        table := its ++ ts.map (·.type), memory := ims ++ ms
-        local_ := [], label := [], return_ := none }
-    let c' : TContext :=
-      { typesT := [], funcT := [], global := igs, table := [], memory := []
-        local_ := [], label := [], return_ := none }
-    Wasm.List.Forall₂ (ModuleFuncTyping c) fs fts ∧
-    ts.all moduleTabTyping = true ∧
-    ms.all moduleMemTyping = true ∧
-    Wasm.List.Forall₂ (ModuleGlobTyping c') gs gts ∧
-    (∀ x ∈ els, ModuleElemTyping c x) ∧
-    (∀ x ∈ ds, ModuleDataTyping c x) ∧
-    predOption (moduleStartTyping c) iOpt = true ∧
-    Wasm.List.Forall₂ (fun (imp : ModuleImport) => (moduleImportTyping c imp.desc · = true))
-      imps impts ∧
-    Wasm.List.Forall₂ (fun (exp : ModuleExport) => (moduleExportTyping c exp.desc · = true))
-      exps expts
+#rocq_ignore iriswasm.module_typing_body "the Core module judgment has unique exports and ordered globals"
+abbrev ModuleTypingBody := Wasm.ModuleTypingFields
 
 @[rocq_alias iriswasm.module_typing_body_eq]
 theorem module_typing_body_eq (m : Module) (impts expts : List ExternT) :
@@ -1377,7 +1338,7 @@ theorem module_inst_build_table_length (m : Module) (i : Instance) (n : Nat) (m0
     (moduleInstBuildTable m i n m0).data.length = m0.type.limits.min := by
   rw [buildTable_eq]
   refine fold_left_preserve (fun t : Tableinst => t.data.length = m0.type.limits.min) _ _ _ ?_ ?_
-  · simp [moduleInstTableBaseCreate]
+  · simp [moduleInstTableBaseCreate, Tableinst.data]
   · intro t me ht
     rcases me with ⟨⟨k⟩, off, init⟩
     simp only [tabStep]
@@ -1393,7 +1354,7 @@ theorem module_inst_build_table_lt_is_Some (m : Module) (i : Instance) (n : Nat)
     j < m0.type.limits.min → ((moduleInstBuildTable m i n m0).data[j]?).isSome = true := by
   intro hj
   rw [← module_inst_build_table_length m i n m0] at hj
-  simp [hj]
+  rw [List.getElem?_eq_getElem hj]; rfl
 
 @[rocq_alias iriswasm.repeat_lookup_eq]
 theorem repeat_lookup_eq (T : Type) (x y : T) (n i : Nat) :
@@ -1402,21 +1363,22 @@ theorem repeat_lookup_eq (T : Type) (x y : T) (n i : Nat) :
   simp only [List.getElem?_replicate] at h
   split at h <;> simp_all
 
-/-- An element of a replaced table/memory comes from the old contents at the same index or from
-the inserted segment. -/
-private theorem replace_lookup {α : Type} (d fns : List α) (o j : Nat) (x : α)
-    (h : ((d.take o ++ fns ++ d.drop (o + fns.length)).take d.length)[j]? = some x) :
-    d[j]? = some x ∨ ∃ e : Nat, fns[e]? = some x := by
-  rw [List.getElem?_take] at h
+private theorem replace_lookup (t : Tableinst) (fns : List Funcelem) (o j : Nat) (x : Funcelem)
+    (h : (tableInitReplaceSingle t o fns).data[j]? = some x) :
+    t.data[j]? = some x ∨ ∃ e : Nat, fns[e]? = some x := by
+  have hj := (List.getElem?_eq_some_iff.1 h).1
+  rw [← table_init_replace_single_preserve_len t o fns _ rfl] at hj
+  rw [data_tableInitReplaceSingle, List.append_assoc, List.getElem?_append] at h
   split at h
-  · rw [List.append_assoc, List.getElem?_append] at h
+  · left; rw [List.getElem?_take] at h; split at h <;> simp_all
+  · rw [List.getElem?_append] at h
     split at h
-    · left; rw [List.getElem?_take] at h; split at h <;> simp_all
-    · rw [List.getElem?_append] at h
+    · right
+      rw [List.getElem?_take] at h
       split at h
-      · exact .inr ⟨_, h⟩
-      · left; rw [List.getElem?_drop] at h; rw [← h]; congr 1; simp at *; omega
-  · simp at h
+      · exact ⟨_, h⟩
+      · cases h
+    · left; rw [List.getElem?_drop] at h; rw [← h]; congr 1; simp at *; omega
 
 private theorem isSome_insert_of_some {V : Type} {w : NatMap V} {a n : Nat} {t0 v : V}
     (h : get? w a = some t0) : (get? (insert w a v) n).isSome = (get? w n).isSome := by
@@ -1440,7 +1402,7 @@ theorem module_inst_build_table_lookup_Some (m : Module) (i : Instance) (n : Nat
       decide (n < getImportTableCount m) = false ∧
       ∃ ei : Nat, minit[ei]? = some (.funcidx idx)) _ _ _ ?_ ?_
   · intro j x h
-    simp only [moduleInstTableBaseCreate] at h
+    simp only [moduleInstTableBaseCreate, Tableinst.data, RunTable.toList_uniform] at h
     exact .inl (repeat_lookup_eq _ _ _ _ _ h).symm
   · intro t me ht ⟨ki, hki⟩ j x h
     rcases me with ⟨⟨k⟩, off, init⟩
@@ -1616,21 +1578,23 @@ theorem module_inst_build_mems_length (m : Module) (i : Instance) :
   intro l d hl
   rcases d with ⟨⟨k⟩, off, init⟩
   dsimp only
-  split
-  · exact hl
-  · split
-    · simpa using hl
-    · exact hl
+  split <;> try exact hl
+  split <;> try exact hl
+  split <;> simpa using hl
 
-@[rocq_alias iriswasm.module_inst_build_mem]
+private def memStep (m : Module) (n : Nat) (mem : Memory) (d : ModuleData) : Memory :=
+  match d.data with
+  | .memidx k =>
+    if k < getImportMemCount m then mem else
+      if n = k then
+        match literalDataOffset d.offset with
+        | some off => memInitReplaceSingle mem off d.init
+        | none => mem
+      else mem
+
+#rocq_ignore iriswasm.module_inst_build_mem "active data uses the literal memory32 or memory64 offset"
 def moduleInstBuildMem (m : Module) (_inst : Instance) (n : Nat) (mmem : Memory) : Memory :=
-  m.data.foldl (fun mem d =>
-    let imc := getImportMemCount m
-    match d.data with
-    | .memidx k =>
-      if k < imc then mem else
-        if n = k then memInitReplaceSingle mem (assertConst1I32ToNat d.offset) d.init
-        else mem) mmem
+  m.data.foldl (memStep m n) mmem
 
 /-- One step of `moduleInstBuildMems` (the function folded over `m.data`). -/
 private def memsStep (m : Module) (mems : List Memory) (d : ModuleData) : List Memory :=
@@ -1638,17 +1602,11 @@ private def memsStep (m : Module) (mems : List Memory) (d : ModuleData) : List M
   | .memidx k =>
     if k < getImportMemCount m then mems else
       match mems[k - getImportMemCount m]? with
-      | some mem => mems.set (k - getImportMemCount m)
-          (memInitReplaceSingle mem (assertConst1I32ToNat d.offset) d.init)
+      | some mem =>
+        match literalDataOffset d.offset with
+        | some off => mems.set (k - getImportMemCount m) (memInitReplaceSingle mem off d.init)
+        | none => mems
       | none => mems
-
-/-- One step of `moduleInstBuildMem m inst n`. -/
-private def memStep (m : Module) (n : Nat) (mem : Memory) (d : ModuleData) : Memory :=
-  match d.data with
-  | .memidx k =>
-    if k < getImportMemCount m then mem else
-      if n = k then memInitReplaceSingle mem (assertConst1I32ToNat d.offset) d.init
-      else mem
 
 private theorem memsStep_eq (m : Module) (ms : List Memory) (d : ModuleData) :
     memsStep m ms d = ms.mapIdx (fun j t => memStep m (j + getImportMemCount m) t d) := by
@@ -1662,6 +1620,8 @@ private theorem memsStep_eq (m : Module) (ms : List Memory) (d : ModuleData) :
     simp only [List.getElem?_mapIdx]
     split
     · rename_i t0 ht0
+      cases literalDataOffset off
+      · simp
       rw [List.getElem?_set]
       by_cases hj : k - getImportMemCount m = j
       · subst hj
@@ -1702,26 +1662,21 @@ theorem module_inst_build_mems_is_Some (m : Module) (i : Instance) (n : Nat) :
     ((moduleInstBuildMems m i)[n]?).isSome = true ↔ (m.mems[n]?).isSome = true := by
   simp [mems_eq_map]
 
-@[rocq_alias iriswasm.module_inst_build_mem_max_opt]
-theorem module_inst_build_mem_max_opt (m : Module) (i : Instance) (n : Nat) (mm : Memory) :
-    (moduleInstBuildMem m i n mm).maxOpt = mm.maxOpt := by
-  change (m.data.foldl (memStep m n) mm).maxOpt = _
-  refine fold_left_preserve (fun t : Memory => t.maxOpt = mm.maxOpt) _ _ _ rfl ?_
+#rocq_ignore iriswasm.module_inst_build_mem_max_opt "data initialization preserves the whole memory type"
+theorem module_inst_build_mem_type (m : Module) (i : Instance) (n : Nat) (mm : Memory) :
+    (moduleInstBuildMem m i n mm).type = mm.type := by
+  change (m.data.foldl (memStep m n) mm).type = _
+  refine fold_left_preserve (fun t : Memory => t.type = mm.type) _ _ _ rfl ?_
   intro t d ht
   rcases d with ⟨⟨k⟩, off, init⟩
   simp only [memStep]
-  split
-  · exact ht
-  · split
-    · exact ht
-    · exact ht
+  split <;> try exact ht
+  split <;> try exact ht
+  split <;> exact ht
 
-@[rocq_alias iriswasm.module_inst_mem_base_func_max_opt]
-theorem module_inst_mem_base_func_max_opt (mmem : MemoryType) :
-    (moduleInstMemBaseFunc mmem).maxOpt = mmem.max := by
-  rfl
+#rocq_ignore iriswasm.module_inst_mem_base_func_max_opt "the allocated memory stores the complete descriptor"
 
-@[rocq_alias iriswasm.module_import_init_mem]
+#rocq_ignore iriswasm.module_import_init_mem "active data resolves the store address and both widths"
 def moduleImportInitMem (m : Module) (inst : Instance) (n : Nat) (ms : Memory) : Memory :=
   m.data.foldl (fun ms d =>
     let imc := getImportMemCount m
@@ -1729,8 +1684,11 @@ def moduleImportInitMem (m : Module) (inst : Instance) (n : Nat) (ms : Memory) :
     | .memidx k =>
       if k < imc then
         match inst.memory[k]? with
-        | some _ =>
-          if n = k then memInitReplaceSingle ms (assertConst1I32ToNat d.offset) d.init
+        | some addr =>
+          if n = addr then
+            match literalDataOffset d.offset with
+            | some off => memInitReplaceSingle ms off d.init
+            | none => ms
           else ms
         | none => ms
       else ms) ms
@@ -1738,7 +1696,8 @@ def moduleImportInitMem (m : Module) (inst : Instance) (n : Nat) (ms : Memory) :
 @[rocq_alias iriswasm.mem_init_replace_single_preserve_len]
 theorem mem_init_replace_single_preserve_len (mem : Memory) (offset : Nat) (bs : List Byte) :
     (memInitReplaceSingle mem offset bs).data.data.length = mem.data.data.length := by
-  simp only [memInitReplaceSingle, List.length_take, List.length_append, List.length_drop]
+  simp only [memInitReplaceSingle, MemoryList.data_splice, lengthMem_eq_data_length,
+    List.length_take, List.length_append, List.length_drop]
   omega
 
 @[rocq_alias iriswasm.module_import_init_mem_lookup_length]
@@ -1751,29 +1710,31 @@ theorem module_import_init_mem_lookup_length (m : Module) (i : Instance) (n : Na
   intro t d ht
   rcases d with ⟨⟨k⟩, off, init⟩
   dsimp only
+  split <;> try exact ht
+  split <;> try exact ht
+  split <;> try exact ht
   split
-  · split
-    · split
-      · exact (mem_init_replace_single_preserve_len _ _ _).trans ht
-      · exact ht
-    · exact ht
+  · exact (mem_init_replace_single_preserve_len _ _ _).trans ht
   · exact ht
 
-private theorem importInitMems_isSome (m : Module) (i : Instance) (wms : NatMap Memory)
-    (n : Nat) : (get? (moduleImportInitMems m i wms) n).isSome = (get? wms n).isSome := by
+private theorem importInitMems_type (m : Module) (i : Instance) (wms : NatMap Memory) (n : Nat) :
+    (get? (moduleImportInitMems m i wms) n).map Memory.type = (get? wms n).map Memory.type := by
   unfold moduleImportInitMems
-  refine fold_left_preserve (fun w : NatMap Memory => (get? w n).isSome = (get? wms n).isSome)
-    _ _ _ rfl ?_
+  refine fold_left_preserve (fun w : NatMap Memory =>
+    (get? w n).map Memory.type = (get? wms n).map Memory.type) _ _ _ rfl ?_
   intro w d hw
   rcases d with ⟨⟨k⟩, off, init⟩
   dsimp only
-  split
-  · split
-    · split
-      · rw [isSome_insert_of_some ‹_›]; exact hw
-      · exact hw
-    · exact hw
-  · exact hw
+  rw [← hw]
+  split <;> try rfl
+  split <;> try rfl
+  split <;> try rfl
+  split <;> try rfl
+  rw [LawfulPartialMap.get?_insert]; split <;> simp_all [memInitReplaceSingle]
+
+private theorem importInitMems_isSome (m : Module) (i : Instance) (wms : NatMap Memory)
+    (n : Nat) : (get? (moduleImportInitMems m i wms) n).isSome = (get? wms n).isSome := by
+  simpa only [Option.isSome_map] using congrArg Option.isSome (importInitMems_type m i wms n)
 
 @[rocq_alias iriswasm.module_import_init_mems_is_Some]
 theorem module_import_init_mems_is_Some (m : Module) (i : Instance) (wts : NatMap Memory)
@@ -1849,9 +1810,7 @@ private abbrev allocCtx (m : Module) (t_imps : List ExternT) (fts : List Functio
 private theorem body_parts {m : Module} {t_imps t_exps : List ExternT} {fts : List FunctionType}
     {gts : List GlobalType} (h : ModuleTypingBody m t_imps t_exps fts gts) :
     Wasm.List.Forall₂ (ModuleFuncTyping (allocCtx m t_imps fts gts)) m.funcs fts ∧
-    Wasm.List.Forall₂ (ModuleGlobTyping
-      { typesT := [], funcT := [], global := extTGlobs t_imps, table := [], memory := []
-        local_ := [], label := [], return_ := none }) m.globals gts ∧
+    ModuleGlobalsTyping (globalInitContext t_imps) m.globals gts ∧
     Wasm.List.Forall₂ (fun (imp : ModuleImport) e =>
       moduleImportTyping (allocCtx m t_imps fts gts) imp.desc e = true) m.imports t_imps := by
   rcases m with ⟨tfs, fs, ts, ms, gs, els, ds, iOpt, imps, exps⟩
@@ -1911,8 +1870,10 @@ private theorem func_entry (m : Module) (t_imps : List ExternT) (v_imps : List M
     obtain ⟨mf, hmf, htyp⟩ := forall2_lookup_r hfuncs hft
     rcases mf with ⟨⟨ti⟩, locs, body⟩
     rcases ft with ⟨tn, tm⟩
-    obtain ⟨_, hdec, hbe⟩ := htyp
-    have hty : inst.types.getD ti (.tf [] []) = .tf tn tm := by rw [htypes]; simpa using hdec
+    obtain ⟨hdec, hbe⟩ := htyp
+    change m.types[ti]? = some (.tf tn tm) at hdec
+    have hty : inst.types.getD ti (.tf [] []) = .tf tn tm := by
+      simp [htypes, List.getD_eq_getElem?_getD, hdec]
     rw [hdrop]
     unfold moduleInstResourcesFuncInvs
     iintro #- #- #Hfr
@@ -1968,40 +1929,14 @@ private instance interpTable_persistent (sz n : Nat)
     [∀ n τf cl, Persistent (icl n τf cl)] : Persistent (interpTable sz icl n) := by
   unfold interpTable; infer_instance
 
-private instance interpMem_persistent (n : Nat) : Persistent (interpMem (GF := GF) n) := by
-  unfold interpMem; infer_instance
-
-/-- The table conjunct of `interpInstance'`. -/
-private def tabConj (τctx : TContext)
-    (icl : Nat → FunctionType → FunctionClosure → IProp GF) (i : Instance) : IProp GF :=
-  match τctx.table[0]? with
-  | some τt => match i.tab[0]? with
-    | some a => iprop(∃ (tableSize : Nat) (tableLim : Option Nat),
-        ⌜tableLim.isSome.toNat ≤ τt.limits.max.isSome.toNat⌝ ∗
-        a ↪[wtlimit] tableLim ∗
-        a ↪[wtsize] tableSize ∗
-        interpTable tableSize icl a)
-    | none => iprop(False)
-  | none => iprop(True)
-
-/-- The memory conjunct of `interpInstance'`. -/
-private def memConj (τctx : TContext) (i : Instance) : IProp GF :=
-  match τctx.memory[0]? with
-  | some τm => match i.memory[0]? with
-    | some a => iprop(a ↪[wmlimit] τm.max ∗ interpMem a)
-    | none => iprop(False)
-  | none => iprop(True)
-
 private theorem interpInstance'_intro (τctx : TContext)
     (icl icl' : Nat → FunctionType → FunctionClosure → IProp GF) (i : Instance) :
     iprop(⌜i.types = τctx.typesT⌝ ∗
       ([∗list] kf;tf ∈ i.funcs;τctx.funcT, interpFunction tf icl kf) ∗
-      tabConj τctx icl' i ∗ memConj τctx i ∗
+      ([∗list] a;tt ∈ i.tab;τctx.table, interpTableAt tt icl' a) ∗
+      ([∗list] a;mt ∈ i.memory;τctx.memory, interpMemLimit a mt.limits.max ∗ interpMem mt.address a) ∗
       ([∗list] kg;gt ∈ i.globs;τctx.global, interpGlobal gt kg)) ⊢
-    interpInstance' τctx icl icl' i := by
-  unfold interpInstance' tabConj memConj
-  cases τctx.table[0]? <;> cases i.tab[0]? <;> cases τctx.memory[0]? <;> cases i.memory[0]? <;>
-    exact .rfl
+    interpInstance' τctx icl icl' i := .rfl
 
 /-- The table conjunct of the pre-instance relation. -/
 private theorem tabs_part (m : Module) (t_imps : List ExternT) (v_imps : List ModuleExport)
@@ -2028,88 +1963,23 @@ private theorem tabs_part (m : Module) (t_imps : List ExternT) (v_imps : List Mo
       □ moduleInstResourcesFuncInvs m.funcs inst (inst.funcs.drop (getImportFuncCount m)) -∗
       □ moduleInstResourcesTabInvs (moduleInstBuildTables m inst)
         (inst.tab.drop (getImportTableCount m)) -∗
-      tabConj (allocCtx m t_imps fts gts)
-        (interpClosurePre (allocCtx m t_imps fts gts) wfs inst hl) inst := by
+      [∗list] a;tt ∈ inst.tab;(allocCtx m t_imps fts gts).table,
+        interpTableAt tt (interpClosurePre (allocCtx m t_imps fts gts) wfs inst hl) a := by
   have hdropT : inst.tab.drop (getImportTableCount m) = restT := by
     rw [hcT, ← hpreT, ← hlenT]; simp
-  rw [hdropT]
-  unfold tabConj moduleInstResourcesTabInvs importTabNainv
+  rw [hdropT, ← hpreT]
+  unfold moduleInstResourcesTabInvs importTabNainv
   iintro #Hval #Htabs #Hfinv #Htinv #Hfr #Htr
   ihave %Hlen := BigSepL2.bigSepL2_length $$ Htr
   rw [module_inst_build_tables_length] at Hlen
-  rcases hits : extTTabs t_imps with _ | ⟨tt, its⟩
-  · -- no imported table: the first table, if any, is declared by the module
-    have hnil : extTabAddrs (v_imps.map (·.desc)) = [] :=
-      List.eq_nil_of_length_eq_zero (by rw [hlenT, hits]; rfl)
-    rw [hnil, List.nil_append] at hpreT
-    rcases hmt : m.tables with _ | ⟨mt0, mts⟩
-    · have h0 : (allocCtx m t_imps fts gts).table[0]? = none := by simp [hits, hmt]
-      simp only [h0]
-      ipureintro; trivial
-    rw [hmt] at Hlen
-    rcases hr : restT with _ | ⟨a, rest⟩
-    · rw [hr] at Hlen; simp at Hlen
-    have h0 : (allocCtx m t_imps fts gts).table[0]? = some mt0.type := by simp [hits, hmt]
-    have h1 : inst.tab[0]? = some a := by rw [← hpreT, hr]; rfl
-    simp only [h0, h1]
-    have hm0 : m.tables[0]? = some mt0 := by rw [hmt]; rfl
-    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp
-      (module_inst_build_tables_lookup_is_Some m inst 0 mt0 hm0)
-    have hxeq := module_inst_build_tables_lookup m inst 0 mt0 x hm0 hx
-    ihave Hk := BigSepL2.bigSepL2_lookup hx (show (a :: rest)[0]? = some a from rfl) $$ Htr
-    icases Hk with ⟨Hsize, Hlim, Hel⟩
-    -- the instance's functions line up with the context's function types
-    ihave %HlenFr : ⌜m.funcs.length = (inst.funcs.drop (getImportFuncCount m)).length⌝ $$ []
-    · unfold moduleInstResourcesFuncInvs; iapply BigSepL2.bigSepL2_length $$ Hfr
-    have hflen : inst.funcs.length = (extTFuncs t_imps ++ fts).length := by
-      have := Wasm.List.Forall₂.length_eq hfuncs
-      rw [← hpreF] at HlenFr ⊢
-      simp only [List.length_append, List.length_drop] at HlenFr ⊢
-      omega
-    iexists tabSize x, x.maxOpt
-    isplitr
-    · ipureintro
-      rw [hxeq, module_inst_built_table_max_opt_eq]
-      exact Nat.le_refl _
-    isplitr
-    · iexact Hlim
-    isplitr
-    · iexact Hsize
-    unfold interpTable
-    iapply BigSepL.bigSepL_forall_elim
-    iintro %k %z %hk
-    obtain ⟨fe, hfe⟩ : ∃ fe, x.data[k]? = some fe := by
-      have := (List.getElem?_eq_some_iff.mp hk).1
-      simp only [List.length_replicate, tabSize] at this
-      exact ⟨_, List.getElem?_eq_getElem this⟩
-    ihave Hinv := BigSepL.bigSepL_lookup hfe $$ Hel
-    unfold interpTableEntry
-    rw [hxeq] at hfe
-    rcases module_inst_build_table_lookup_Some m inst _ mt0 k fe hfe with
-      rfl | ⟨_, _, _, idx, f, hf, rfl, _⟩
-    · iexists (.tf [] []), none
-      isplitr
-      · iexact Hinv
-      ipureintro; trivial
-    obtain ⟨ft, hft⟩ : ∃ ft, (extTFuncs t_imps ++ fts)[idx]? = some ft := by
-      have := (List.getElem?_eq_some_iff.mp hf).1
-      exact ⟨_, List.getElem?_eq_getElem (hflen ▸ this)⟩
-    iexists ft, some f
-    isplitr
-    · iexact Hinv
-    iapply func_entry m t_imps v_imps wfs (moduleImportInitTabs m inst wts) wms wgs inst fts gts hl
-      restF hfuncs hcF htypes hpreF hlenF hdisj hftc httc hmtc hgtc idx f ft hf hft
-      $$ Hval Hfinv Hfr
-  · -- the first table is imported: it is valid by assumption
-    obtain ⟨a, hva⟩ : ∃ a, (extTabAddrs (v_imps.map (·.desc)))[0]? = some a := by
-      refine ⟨_, List.getElem?_eq_getElem ?_⟩
-      rw [hlenT, hits]; simp
-    have h0 : (allocCtx m t_imps fts gts).table[0]? = some tt := by simp [hits]
-    have h1 : inst.tab[0]? = some a := by
-      rw [← hpreT, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hva).1, hva]
-    simp only [h0, h1]
-    obtain ⟨k', ht, fm, hv, hd⟩ := import_tabs_lookup t_imps v_imps 0 tt a wfs _ wms wgs
-      (by rw [hits]; rfl) hva hftc httc hmtc hgtc
+  iapply BigSepL2.bigSepL2_app_wand
+  · iapply (BigSepL2.bigSepL2_forall fun _ _ _ => inferInstance).2
+    isplit
+    · ipureintro; exact hlenT
+    iintro %j %a %tt %ha %htt
+    unfold interpTableAt
+    obtain ⟨k', ht, fm, hv, hd⟩ :=
+      import_tabs_lookup t_imps v_imps j tt a wfs _ wms wgs htt ha hftc httc hmtc hgtc
     obtain ⟨b, hb, hR⟩ := forall2_lookup_l httc hv
     rw [ht] at hb; cases hb
     simp only [hd] at hR
@@ -2124,17 +1994,71 @@ private theorem tabs_part (m : Module) (t_imps : List ExternT) (v_imps : List Mo
     iexists tabSize tab, tab.maxOpt
     isplitr
     · ipureintro
-      simp only [tabTyping, Bool.and_eq_true, decide_eq_true_eq] at hty
-      revert hty
-      cases tab.maxOpt.isSome <;> cases tt.limits.max.isSome <;> simp
+      simp only [tabTyping, Limits.matches, Bool.and_eq_true] at hty
+      exact hty.2
     isplitr
     · iexact Hlim
     isplitr
     · iexact Hsize
     have hsz : tabSize tab = tabSize x := by
-      rw [htab]; exact module_import_init_tab_lookup_length m inst a x
+      rw [htab]
+      simpa only [tabSize, Tableinst.length_data] using module_import_init_tab_lookup_length m inst a x
     rw [hsz]
     iexact Hv
+  · iapply (BigSepL2.bigSepL2_forall fun _ _ _ => inferInstance).2
+    isplit
+    · ipureintro; simpa only [List.length_map] using Hlen.symm
+    iintro %j %a %tt %ha %htt
+    simp only [List.getElem?_map, Option.map_eq_some_iff] at htt
+    obtain ⟨mt, hmt, rfl⟩ := htt
+    unfold interpTableAt
+    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp
+      (module_inst_build_tables_lookup_is_Some m inst j mt hmt)
+    have hxeq := module_inst_build_tables_lookup m inst j mt x hmt hx
+    ihave Hk := BigSepL2.bigSepL2_lookup hx ha $$ Htr
+    icases Hk with ⟨Hsize, Hlim, Hel⟩
+    -- the instance's functions line up with the context's function types
+    ihave %HlenFr : ⌜m.funcs.length = (inst.funcs.drop (getImportFuncCount m)).length⌝ $$ []
+    · unfold moduleInstResourcesFuncInvs; iapply BigSepL2.bigSepL2_length $$ Hfr
+    have hflen : inst.funcs.length = (extTFuncs t_imps ++ fts).length := by
+      have := Wasm.List.Forall₂.length_eq hfuncs
+      rw [← hpreF] at HlenFr ⊢
+      simp only [List.length_append, List.length_drop] at HlenFr ⊢
+      omega
+    iexists tabSize x, x.maxOpt
+    isplitr
+    · ipureintro
+      rw [hxeq, module_inst_built_table_max_opt_eq]
+      exact Limits.maxMatches_self _
+    isplitr
+    · iexact Hlim
+    isplitr
+    · iexact Hsize
+    unfold interpTable
+    iapply BigSepL.bigSepL_forall_elim
+    iintro %k %z %hk
+    obtain ⟨fe, hfe⟩ : ∃ fe, x.data[k]? = some fe := by
+      have := (List.getElem?_eq_some_iff.mp hk).1
+      rw [List.length_replicate, tabSize, ← Tableinst.length_data] at this
+      exact ⟨_, List.getElem?_eq_getElem this⟩
+    ihave Hinv := BigSepL.bigSepL_lookup hfe $$ Hel
+    unfold interpTableEntry
+    rw [hxeq] at hfe
+    rcases module_inst_build_table_lookup_Some m inst _ mt k fe hfe with
+      rfl | ⟨_, _, _, idx, f, hf, rfl, _⟩
+    · iexists (.tf [] []), none
+      isplitr
+      · iexact Hinv
+      ipureintro; trivial
+    obtain ⟨ft, hft⟩ : ∃ ft, (extTFuncs t_imps ++ fts)[idx]? = some ft := by
+      have := (List.getElem?_eq_some_iff.mp hf).1
+      exact ⟨_, List.getElem?_eq_getElem (hflen ▸ this)⟩
+    iexists ft, some f
+    isplitr
+    · iexact Hinv
+    iapply func_entry m t_imps v_imps wfs (moduleImportInitTabs m inst wts) wms wgs inst fts gts hl
+      restF hfuncs hcF htypes hpreF hlenF hdisj hftc httc hmtc hgtc idx f ft hf hft
+      $$ Hval Hfinv Hfr
 
 /-- The memory conjunct of the pre-instance relation. -/
 private theorem mems_part (m : Module) (t_imps : List ExternT) (v_imps : List ModuleExport)
@@ -2146,78 +2070,69 @@ private theorem mems_part (m : Module) (t_imps : List ExternT) (v_imps : List Mo
     (hftc : funcTypecheck v_imps t_imps wfs) (httc : tabTypecheck v_imps t_imps wts)
     (hmtc : memTypecheck v_imps t_imps (moduleImportInitMems m inst wms))
     (hgtc : globTypecheck v_imps t_imps wgs) :
-    ⊢ (□ [∗map] n ↦ _m ∈ wms, interpMem (GF := GF) n) -∗
+    ⊢ (□ [∗map] n ↦ mem ∈ wms, interpMem (GF := GF) mem.type.address n) -∗
       □ importMemNainv (moduleImportInitMems m inst wms) -∗
       □ moduleInstResourcesMemInvs (moduleInstBuildMems m inst)
         (inst.memory.drop (getImportMemCount m)) -∗
-      memConj (allocCtx m t_imps fts gts) inst := by
+      [∗list] a;mt ∈ inst.memory;(allocCtx m t_imps fts gts).memory,
+        interpMemLimit a mt.limits.max ∗ interpMem mt.address a := by
   have hdrop : inst.memory.drop (getImportMemCount m) = restM := by
     rw [hcM, ← hpreM, ← hlenM]; simp
-  rw [hdrop]
-  unfold memConj moduleInstResourcesMemInvs importMemNainv
+  rw [hdrop, ← hpreM]
+  unfold moduleInstResourcesMemInvs importMemNainv
   iintro #Hmems #Hminv #Hmr
   ihave %Hlen := BigSepL2.bigSepL2_length $$ Hmr
   rw [module_inst_build_mems_length] at Hlen
-  rcases hims : extTMems t_imps with _ | ⟨mt, ims⟩
-  · -- no imported memory: the first memory, if any, is declared by the module
-    have hnil : extMemAddrs (v_imps.map (·.desc)) = [] :=
-      List.eq_nil_of_length_eq_zero (by rw [hlenM, hims]; rfl)
-    rw [hnil, List.nil_append] at hpreM
-    rcases hmm : m.mems with _ | ⟨mm, mms⟩
-    · have h0 : (allocCtx m t_imps fts gts).memory[0]? = none := by simp [hims, hmm]
-      simp only [h0]
-      ipureintro; trivial
-    rw [hmm] at Hlen
-    rcases hr : restM with _ | ⟨a, rest⟩
-    · rw [hr] at Hlen; simp at Hlen
-    have h0 : (allocCtx m t_imps fts gts).memory[0]? = some mm := by simp [hims, hmm]
-    have h1 : inst.memory[0]? = some a := by rw [← hpreM, hr]; rfl
-    simp only [h0, h1]
-    have hm0 : m.mems[0]? = some mm := by rw [hmm]; rfl
-    obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp
-      ((module_inst_build_mems_is_Some m inst 0).2 (by rw [hm0]; rfl))
-    have hmax : x.maxOpt = mm.max := by
-      rw [module_inst_build_mems_lookup m inst 0 mm x hx hm0, module_inst_build_mem_max_opt,
-        module_inst_mem_base_func_max_opt]
-    ihave Hk := BigSepL2.bigSepL2_lookup hx (show (a :: rest)[0]? = some a from rfl) $$ Hmr
-    icases Hk with ⟨Hlim, Hinv⟩
-    rw [← hmax]
-    isplitr
-    · iexact Hlim
-    unfold interpMem; iexact Hinv
-  · -- the first memory is imported
-    obtain ⟨a, hva⟩ : ∃ a, (extMemAddrs (v_imps.map (·.desc)))[0]? = some a := by
-      refine ⟨_, List.getElem?_eq_getElem ?_⟩
-      rw [hlenM, hims]; simp
-    have h0 : (allocCtx m t_imps fts gts).memory[0]? = some mt := by simp [hims]
-    have h1 : inst.memory[0]? = some a := by
-      rw [← hpreM, List.getElem?_append_left (List.getElem?_eq_some_iff.mp hva).1, hva]
-    simp only [h0, h1]
-    obtain ⟨k', ht, fm, hv, hd⟩ := import_mems_lookup t_imps v_imps 0 mt a wfs wts _ wgs
-      (by rw [hims]; rfl) hva hftc httc hmtc hgtc
+  iapply BigSepL2.bigSepL2_app_wand
+  · iapply (BigSepL2.bigSepL2_forall fun _ _ _ => inferInstance).2
+    isplit
+    · ipureintro; exact hlenM
+    iintro %k %a %mt %ha %hmt
+    obtain ⟨k', ht, fm, hv, hd⟩ := import_mems_lookup t_imps v_imps k mt a wfs wts _ wgs
+      hmt ha hftc httc hmtc hgtc
     obtain ⟨b, hb, hR⟩ := forall2_lookup_l hmtc hv
     rw [ht] at hb; cases hb
     simp only [hd] at hR
     obtain ⟨mem, mt', hmem, heq, hty⟩ := hR
     cases heq
-    simp only [memTyping, Bool.and_eq_true, beq_iff_eq] at hty
+    simp only [memTyping, Limits.matches, Bool.and_eq_true, beq_iff_eq] at hty
     obtain ⟨x, hx⟩ := Option.isSome_iff_exists.mp
       ((module_import_init_mems_is_Some m inst wms a).2 (by rw [hmem]; rfl))
     ihave Hk := BigSepM.bigSepM_lookup hmem $$ Hminv
     icases Hk with ⟨-, Hlim⟩
-    rw [← hty.2]
     isplitr
-    · iexact Hlim
+    · iexists mem.type.limits.max
+      isplitr
+      · ipureintro; exact hty.2.2
+      iexact Hlim
+    have htype := importInitMems_type m inst wms a
+    simp only [hmem, hx, Option.map_some, Option.some.injEq] at htype
+    rw [← hty.1, htype]
     iapply BigSepM.bigSepM_lookup hx $$ Hmems
+  · iapply (BigSepL2.bigSepL2_forall fun _ _ _ => inferInstance).2
+    isplit
+    · ipureintro; exact Hlen.symm
+    iintro %k %a %mt %ha %hmt
+    obtain ⟨mem, hm⟩ := Option.isSome_iff_exists.mp
+      ((module_inst_build_mems_is_Some m inst k).2 (by rw [hmt]; rfl))
+    have htype : mem.type = mt := by
+      rw [module_inst_build_mems_lookup m inst k mt mem hm hmt, module_inst_build_mem_type]
+      rfl
+    ihave Hk := BigSepL2.bigSepL2_lookup hm ha $$ Hmr
+    icases Hk with ⟨Hinv, Hlim⟩
+    isplitr
+    · iexists mem.type.limits.max
+      isplitr
+      · ipureintro; rw [htype]; exact Limits.maxMatches_self _
+      iexact Hlim
+    rw [← htype]; iexact Hinv
 
 /-- The globals conjunct of the pre-instance relation. -/
 private theorem globs_part (m : Module) (t_imps : List ExternT) (v_imps : List ModuleExport)
     (wfs : NatMap FunctionClosure) (wts : NatMap Tableinst) (wms : NatMap Memory)
     (wgs : NatMap Global) (inst : Instance) (fts : List FunctionType) (gts : List GlobalType)
     (g_inits : List Value) (restG : List Nat)
-    (hglobals : Wasm.List.Forall₂ (ModuleGlobTyping
-      { typesT := [], funcT := [], global := extTGlobs t_imps, table := [], memory := []
-        local_ := [], label := [], return_ := none }) m.globals gts)
+    (hglobals : ModuleGlobalsTyping (globalInitContext t_imps) m.globals gts)
     (hcG : getImportGlobalCount m = (extTGlobs t_imps).length)
     (hpreG : extGlobAddrs (v_imps.map (·.desc)) ++ restG = inst.globs)
     (hlenG : (extGlobAddrs (v_imps.map (·.desc))).length = (extTGlobs t_imps).length)
@@ -2230,7 +2145,7 @@ private theorem globs_part (m : Module) (t_imps : List ExternT) (v_imps : List M
       [∗list] kg;gt ∈ inst.globs;(allocCtx m t_imps fts gts).global, interpGlobal gt kg := by
   have hdrop : inst.globs.drop (getImportGlobalCount m) = restG := by
     rw [hcG, ← hpreG, ← hlenG]; simp
-  have hglen := Wasm.List.Forall₂.length_eq hglobals
+  have hglen : gts.length = m.globals.length := by simp [hglobals.types_eq]
   rw [hdrop, ← hpreG]
   unfold moduleInstResourcesGlobInvs importGlobNainv
   iintro #Hginv #Hgr
@@ -2297,10 +2212,10 @@ private theorem res_disj (v_imps : List ModuleExport) (t_imps : List ExternT)
   iintro ⟨Hf, -⟩ ⟨Hm, -⟩
   iapply module_res_imports_disj v_imps t_imps wfs m inst $$ Hf Hm
 
+#rocq_ignore iriswasm.interp_instance_alloc "imported and newly allocated memory invariants are width-indexed"
 /-- Since host functions can only be imported, the host function is already accounted for and
 determined by the validity of imports; the list `hl` the imports are valid against suffices to
 determine the validity of the instance. -/
-@[rocq_alias iriswasm.interp_instance_alloc]
 theorem interp_instance_alloc (hl : List (Hostfuncidx × FunctionType)) (E : CoPset) (m : Module)
     (t_imps t_exps : List ExternT) (v_imps : List ModuleExport) (wfs : NatMap FunctionClosure)
     (wts : NatMap Tableinst) (wms : NatMap Memory) (wgs : NatMap Global) (inst : Instance)
@@ -2324,7 +2239,7 @@ theorem interp_instance_alloc (hl : List (Hostfuncidx × FunctionType)) (E : CoP
     g_inits.map typeof = m.globals.map (·.type.t) →
     ⊢ ([∗map] _k ↦ cl ∈ wfs, interpClosure (GF := GF) hl (clType cl) cl) -∗
       ([∗map] n ↦ t ∈ wts, interpTable (tabSize t) (interpClosurePre C wfs inst hl) n) -∗
-      ([∗map] n ↦ _m ∈ wms, interpMem n) -∗
+      ([∗map] n ↦ mem ∈ wms, interpMem mem.type.address n) -∗
       importResourcesWasmTypecheck v_imps t_imps wfs wts' wms' wgs -∗
       moduleInstResourcesWasm m inst tab_inits mem_inits glob_inits ={E}=∗
       interpInstance C hl inst ∗

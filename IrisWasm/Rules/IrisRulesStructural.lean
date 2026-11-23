@@ -19,6 +19,102 @@ open Iris Iris.BI Iris.ProgramLogic Iris.Std Wasm
 
 variable {hlc : HasLC} {GF : BundledGFunctors} [WasmG hlc GF]
 
+/-- The frame fragment agrees with the frame stored in the state interpretation. -/
+private theorem frame_agree {f : Frame} {locs : List Value} {inst : Instance} :
+    ⊢ (ghost_map_auth (WasmG.frameGName GF) (DFrac.own 1)
+        (insert (PartialMap.empty : UnitMapF Frame) () ⟨locs, inst⟩) -∗
+      ↪[frame] f -∗ ⌜f = ⟨locs, inst⟩⌝ : IProp GF) := by
+  unfold frameOwn
+  iintro Ha Hf
+  ihave %h := ghost_map_lookup $$ Ha Hf
+  ipureintro
+  rw [get?_insert_eq rfl] at h
+  exact (Option.some.inj h).symm
+
+/-- One deterministic, state-preserving step `es ↦ es'`, enabled by the resources `R` and
+the frame `f0`; both are handed back to the continuation. -/
+theorem wp_det_step {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {f0 : Frame}
+    {es es' : Expr} (R : IProp GF) (hnv : toVal es = none)
+    (hred : ∀ ws locs inst, iprop(stateInterp (ws, locs, inst) ∗ R) ⊢
+      ⌜Frame.mk locs inst = f0 → Reduce ws f0 es ws f0 es'⌝)
+    (hgrow : ∀ x i, firstInstr es ≠ some (.basic (.growMemory x), i))
+    (htrap : ∀ i, firstInstr es ≠ some (.trap, i)) :
+    ⊢ (R -∗ ↪[frame] f0 -∗ ▷ (R -∗ ↪[frame] f0 -∗ WP es' @ s ; E {{ Φ }}) -∗
+      WP es @ s ; E {{ Φ }} : IProp GF) := by
+  let := @WasmG.invGS hlc GF _
+  iintro HR Hf HΦ
+  iapply IrisWp.wp_lift_step (fun f => iprop(↪[frame] f)) (ι := wasmIrisGS) hnv
+  iintro %σ %ns %obs %obs' %nt Hσ
+  rcases σ with ⟨ws, locs, inst⟩
+  ihave %Hred : ⌜Frame.mk locs inst = f0 → Reduce ws f0 es ws f0 es'⌝ $$ [Hσ HR]
+  · iapply hred; iframe
+  ihave %Hfeq : ⌜f0 = ⟨locs, inst⟩⌝ $$ [Hσ Hf]
+  · simp only [Iris.StateInterp.stateInterp, IrisWasm.stateInterp]
+    icases Hσ with ⟨-, -, -, -, Hfr, -⟩
+    iapply frame_agree $$ Hfr Hf
+  subst Hfeq
+  have Hred := Hred rfl
+  iapply fupd_mask_intro Std.LawfulSet.empty_subset
+  iintro Hcls
+  isplitr
+  · ipureintro
+    cases s <;> simp only [Stuckness.MaybeReducible]
+    exact ⟨[], _, (ws, locs, inst), [], Hred, rfl, rfl⟩
+  inext
+  iintro %e₂ %σ₂ %eₜ %Hstep -
+  rcases σ₂ with ⟨ws', locs', inst'⟩
+  obtain ⟨H, rfl, rfl⟩ := Hstep
+  rcases reduce_det H Hred with h | ⟨x, i, h⟩ | ⟨_, _, _, h, -⟩
+  · simp only [Prod.mk.injEq, Frame.mk.injEq] at h
+    obtain ⟨rfl, ⟨rfl, rfl⟩, rfl⟩ := h
+    imod Hcls
+    imodintro
+    iframe Hσ
+    iexists _
+    iframe Hf
+    isplitl
+    · iintro Hf
+      iapply HΦ $$ HR Hf
+    simp; exact .rfl
+  · exact absurd h (hgrow x i)
+  · exact absurd h (htrap _)
+
+/-- The reduction only has to be enabled in the owned frame. -/
+theorem wp_det_step_at_frame {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
+    {e₁ e₂ : Expr} {f : Frame} {x : AdministrativeInstruction} {k : Nat}
+    (hred : ∀ ws, Reduce ws f e₁ ws f e₂) (hfi : firstInstr e₁ = some (x, k))
+    (hg : ∀ idx, x ≠ .basic (.growMemory idx)) (ht : x ≠ .trap) :
+    ⊢ iprop(↪[frame] f -∗ ▷ (↪[frame] f -∗ WP e₂ @ s ; E {{ Φ }}) -∗ WP e₁ @ s ; E {{ Φ }}) := by
+  have lift := wp_det_step (s := s) (E := E) (Φ := Φ) (f0 := f) (es := e₁) (es' := e₂)
+    iprop(emp) (val_head_stuck_reduce (hred default)) (by
+      intro ws locs inst
+      iintro -
+      ipureintro
+      exact fun _ => hred ws) (by simp [hfi, hg]) (by simp [hfi, ht])
+  iintro Hf H
+  iapply lift $$ [] Hf
+  · iempintro
+  inext
+  iintro - Hf
+  iapply H $$ Hf
+
+/-- Lift a step in the owned frame through a label context without changing its cost. -/
+theorem wp_ctx_det_step {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF}
+    {e₁ e₂ : Expr} {i : Nat} {lh : Lholed} {f : Frame} {x : AdministrativeInstruction} {k : Nat}
+    (hred : ∀ ws, Reduce ws f e₁ ws f e₂) (hfi : firstInstr e₁ = some (x, k))
+    (hg : ∀ idx, x ≠ .basic (.growMemory idx)) (ht : x ≠ .trap) :
+    ⊢ iprop(↪[frame] f -∗ ▷ (↪[frame] f -∗ WP e₂ @ s ; E CTX i ; lh {{ Φ }}) -∗
+      WP e₁ @ s ; E CTX i ; lh {{ Φ }}) := by
+  unfold wpWasmCtx
+  iintro Hf H %LI %hLI
+  obtain ⟨LI', hLI'⟩ := lfilled_swap e₂ hLI
+  have hred' : ∀ ws, Reduce ws f LI ws f LI' :=
+    fun ws => Reduce.label e₁ e₂ i lh (hred ws) hLI hLI'
+  iapply wp_det_step_at_frame hred' (starts_with_lfilled x k e₁ i lh LI hfi hLI) hg ht $$ Hf
+  inext
+  iintro Hf
+  iapply H $$ Hf %LI' %hLI'
+
 private abbrev frameP : Frame → IProp GF := fun f => iprop(↪[frame] f)
 
 private theorem wp_unfold_w {s E} {e : Expr} {Φ : Val → IProp GF} :
@@ -376,7 +472,7 @@ theorem wp_frame_value (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (es 
   rcases σ with ⟨ws, locs, inst⟩
   rcases σ₂ with ⟨ws', locs', inst'⟩
   obtain ⟨hr, rfl, rfl⟩ := hstep
-  rcases reduce_det (hred ws ⟨locs, inst⟩) hr with heq | ⟨i, hi⟩ | ⟨i1, _, _, hi, _⟩
+  rcases reduce_det (hred ws ⟨locs, inst⟩) hr with heq | ⟨_, _, hi⟩ | ⟨i1, _, _, hi, _⟩
   · simp only [Prod.mk.injEq, Frame.mk.injEq] at heq
     obtain ⟨rfl, ⟨rfl, rfl⟩, rfl⟩ := heq
     imodintro

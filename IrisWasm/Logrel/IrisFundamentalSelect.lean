@@ -47,4 +47,29 @@ theorem typing_select (C : TContext) (t : ValueType) :
         · iexact Hv1
         · iempintro
 
+theorem typing_vbitselect (C : TContext) :
+    ⊢ (semanticTyping C (toEList [.vbitselect]) (.tf [.v128, .v128, .v128] [.v128]) :
+      IProp GF) := by
+  apply semantic_typing_immV
+  intro i lh hl f ws
+  iintro #Hi #Hctx Hf Hfv Hv
+  ihave %Hlen := BI.BigSepL2.bigSepL2_length $$ Hv
+  rcases ws with _ | ⟨w1, _ | ⟨w2, _ | ⟨w3, _ | ⟨_, _⟩⟩⟩⟩ <;> simp at Hlen
+  icases Hv with ⟨Hx, Hy, Hmask, -⟩
+  isimp only [interpValue, interpValueV128] at Hx Hy Hmask
+  icases Hx with %⟨x, rfl⟩
+  icases Hy with %⟨y, rfl⟩
+  icases Hmask with %⟨mask, rfl⟩
+  simp only [ofVal, vToEList, toEList, List.map_nil, List.map_cons, List.cons_append,
+    List.nil_append]
+  iapply interp_expression_of_wp $$ [Hf] Hfv
+  · iapply wp_vbitselect $$ Hf
+    inext; ipureintro; rfl
+  · unfold interpVal interpValues; iright; iexists [.vec128 (vbitselect x y mask)]
+    isplitr
+    · ipureintro; rfl
+    · isplitl
+      · iunfold interpValue; iunfold interpValueV128; ipureintro; exact ⟨_, rfl⟩
+      · iempintro
+
 end IrisWasm

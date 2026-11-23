@@ -22,16 +22,16 @@ pointer. -/
 @[rocq_alias iriswasm.pop_op]
 def popOp : List BasicInstruction :=
   isEmptyOp ++
-  [ .if_ (.tf [] []) [.unreachable] [],
+  [ .if_ (.result none) [.unreachable] [],
     .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .teeLocal 1,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .getLocal 0,
     .getLocal 1,
     i32const 4,
     .binop .i32 (.i .sub),
-    .store .i32 none 0 0 ]
+    .store .i32 none ⟨0, 0, 0⟩ ]
 
 @[rocq_alias iriswasm.pop]
 def pop : List BasicInstruction :=
@@ -96,7 +96,7 @@ private theorem pop_store (f : Frame) (v n : Nat) (a : I32) (s : List I32) (E : 
     (hmem : f.inst.memory[0]? = some n) :
     ⊢ (isStack v (a :: s) n -∗ ↪[frame] f -∗
       WP ([.basic (.const (valueOfUint v)), .basic (.const (valueOfUint (v + s.length * 4))),
-          .basic (.store .i32 none 0 0)] : Expr) @ E
+          .basic (.store .i32 none ⟨0, 0, 0⟩)] : Expr) @ E
         {{ w, ⌜w = .immV []⌝ ∗ isStack v s n ∗ ↪[frame] f }} : IProp GF) := by
   simp only [isStack, List.length_cons]
   iintro ⟨%hdiv, %hvb, %hlen, Hv, ⟨Ha, Hl⟩, ⟨%bs, %hbs, Hb⟩⟩ Hf
@@ -112,9 +112,10 @@ private theorem pop_store (f : Frame) (v n : Nat) (a : I32) (s : List I32) (E : 
   iapply wp_wand_s (Φ := fun w => iprop((⌜w = .immV []⌝ ∗
       n ↦[wms][ Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (v : _root_.Int)) + 0 ]
         bits (valueOfUint (v + s.length * 4))) ∗ ↪[frame] f)) $$ [Hv Hf]
-  · iapply wp_store (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32 (valueOfUint (v + s.length * 4))
+  · iapply wp_store (x := 0) (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32
+      (valueOfUint (v + s.length * 4))
       (serialiseI32 (Wasm.Int.repr ((v + (s.length + 1) * 4 : Nat) : _root_.Int))) 0 0
-      (Wasm.Int.intOfZ (v : _root_.Int)) n f rfl (length_encodeInt ..) hmem
+      (.i32 (Wasm.Int.intOfZ (v : _root_.Int))) n f rfl (length_encodeInt ..) hmem
     isplitr
     · inext; ipureintro; rfl
     isplitl [Hf]
@@ -179,9 +180,9 @@ theorem spec_pop_op (f0 : Frame) (n v : Nat) (a : I32) (s : List I32) (E : CoPse
   · rw [show valueOfInt 0 = .int32 (Wasm.Int.intOfZ 0) from rfl]
     iapply wp_if_false (c := Wasm.Int.intOfZ 0) (by rfl) $$ Hf
     iintro !> Hf
-    rw [show ([.basic (.block (.tf [] []) [])] : Expr) = [] ++ [.basic (.block (.tf [] []) [])]
+    rw [show ([.basic (.block (.result none) [])] : Expr) = [] ++ [.basic (.block (.result none) [])]
       from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result none) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     iintro !> Hf
     iapply wp_label_value (Φ := fun w => iprop(⌜w = .immV []⌝)) (by rfl) $$ Hf
     inext; ipureintro; rfl
@@ -240,7 +241,7 @@ theorem spec_pop_op (f0 : Frame) (n v : Nat) (a : I32) (s : List I32) (E : CoPse
   · iapply wp_val_cons_imm
     iapply wp_val_cons_imm
     iapply wp_binop (t := .i32) (Φ := fun w => iprop(⌜w = .immV [valueOfUint (v + s.length * 4)]⌝))
-      hb $$ Hf
+      rfl rfl .i32Agree hb $$ Hf
     inext; ipureintro; rfl
   iintro Hf
   simp only [vToEList, List.map, List.cons_append, List.nil_append]
@@ -291,13 +292,13 @@ section valid
 variable [LogrelNaInvs GF]
 attribute [local instance] WasmG.invGS
 
-@[rocq_alias iriswasm.valid_pop]
+#rocq_ignore iriswasm.valid_pop "The stack invariant owns memory32 metadata"
 theorem valid_pop (m t : Nat) (funcs : List Funcaddr) :
     let i0 : Instance :=
       { types := [.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], funcs := funcs,
         tab := [t], memory := [m], globs := [] };
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32] [.i32] [.i32] (toEList pop) [] : IProp GF) := by
   intro i0
   refine stack_valid_unary m i0 rfl [.i32] popOp ?_
@@ -329,7 +330,7 @@ theorem valid_pop (m t : Nat) (funcs : List Funcaddr) :
     subst hw
     rw [show ofVal (.immV [valueOfInt 1]) ++ toEList (popOp.drop 4) =
       [.basic (.const (.int32 (Wasm.Int.intOfZ 1))),
-        .basic (.if_ (.tf [] []) [.unreachable] [])] ++ toEList (popOp.drop 5) from rfl]
+        .basic (.if_ (.result none) [.unreachable] [])] ++ toEList (popOp.drop 5) from rfl]
     iapply wp_wand_s $$ [Hf]
     · iapply wp_if_unreachable_trap (Wasm.Int.intOfZ 1) (by decide) _ _ $$ Hf
     iintro %w ⟨%hw, Hf⟩

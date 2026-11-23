@@ -59,15 +59,18 @@ theorem be_fundamental (C : TContext) (es : List BasicInstruction) (τ : Functio
   | binop h => exact typing_binop _ _ _ h
   | testop h => exact typing_testop _ _ _ h
   | relop h => exact typing_relop _ _ _ h
-  | convert => exact typing_cvtop_convert _ _ _ _
-  | reinterpret => exact typing_cvtop_reinterpret _ _ _
+  | convert hn hh => exact typing_cvtop_convert _ _ _ _ (by simp [convertCond, hn, hh])
+  | reinterpret hn hs =>
+    exact typing_cvtop_reinterpret _ _ _ (by simpa [reinterpretCond, hn, Nat.beq_eq_true_eq] using hs)
+  | truncSat hd hs => exact typing_cvtop_truncSat _ _ _ _ hd hs
   | unreachable => exact typing_unreachable _ _ _
   | nop => exact typing_nop _
   | drop => exact typing_drop _ _
   | select => exact typing_select _ _
-  | block _ ih => exact typing_block _ _ _ _ ih
-  | loop _ ih => exact typing_loop _ _ _ _ ih
-  | ifWasm _ _ ih1 ih2 => exact typing_if _ _ _ _ _ ih1 ih2
+  | vbitselect => exact typing_vbitselect _
+  | block hsig _ ih => exact typing_block _ _ _ _ hsig ih
+  | loop hsig _ ih => exact typing_loop _ _ _ _ hsig ih
+  | ifWasm hsig _ _ ih1 ih2 => exact typing_if _ _ _ _ _ hsig ih1 ih2
   | br h1 h2 => exact typing_br _ _ _ _ _ h1 h2
   | brIf h1 h2 => exact typing_br_if _ _ _ h1 h2
   | brTable h => rw [← List.append_assoc]; exact typing_br_table _ _ _ _ _ _ h
@@ -79,10 +82,10 @@ theorem be_fundamental (C : TContext) (es : List BasicInstruction) (τ : Functio
   | teeLocal _ h => exact typing_tee_local _ _ _ h
   | getGlobal _ h => exact typing_get_global _ _ _ h
   | setGlobal _ h1 h2 h3 => exact typing_set_global _ _ _ _ h1 h2 h3
-  | load h1 h2 => exact typing_load _ _ _ _ _ h1 h2
-  | store h1 h2 => exact typing_store _ _ _ _ _ h1 h2
-  | currentMemory h => exact typing_current_memory _ h
-  | growMemory h => exact typing_grow_memory _ h
+  | load hmem halign hoff => exact typing_load _ _ _ _ hmem halign hoff
+  | store hmem halign hoff => exact typing_store _ _ _ _ hmem halign hoff
+  | currentMemory h => exact typing_current_memory _ _ h
+  | growMemory h => exact typing_grow_memory _ _ h
   | empty => exact typing_nil _
   | composition _ _ ih1 ih2 =>
     rw [toEList, List.map_append]

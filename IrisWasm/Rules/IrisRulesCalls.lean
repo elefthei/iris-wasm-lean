@@ -22,66 +22,6 @@ theorem v_to_e_list_to_val (es : Expr) (vs : List Value) :
     toVal es = some (.immV vs) → vToEList vs = es :=
   of_to_val es _
 
-/-- The frame fragment agrees with the frame stored in the state interpretation. -/
-private theorem frame_agree {f : Frame} {locs : List Value} {inst : Instance} :
-    ⊢ (ghost_map_auth (WasmG.frameGName GF) (DFrac.own 1)
-        (insert (PartialMap.empty : UnitMapF Frame) () ⟨locs, inst⟩) -∗
-      ↪[frame] f -∗ ⌜f = ⟨locs, inst⟩⌝ : IProp GF) := by
-  unfold frameOwn
-  iintro Ha Hf
-  ihave %h := ghost_map_lookup $$ Ha Hf
-  ipureintro
-  rw [get?_insert_eq rfl] at h
-  exact (Option.some.inj h).symm
-
-/-- One deterministic, state-preserving step `es ↦ es'`, enabled by the resources `R` and
-the frame `f0`; both are handed back to the continuation. -/
-private theorem wp_det_step {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} {f0 : Frame}
-    {es es' : Expr} (R : IProp GF) (hnv : toVal es = none)
-    (hred : ∀ ws locs inst, iprop(stateInterp (ws, locs, inst) ∗ R) ⊢
-      ⌜Frame.mk locs inst = f0 → Reduce ws f0 es ws f0 es'⌝)
-    (hgrow : ∀ i, firstInstr es ≠ some (.basic .growMemory, i))
-    (htrap : ∀ i, firstInstr es ≠ some (.trap, i)) :
-    ⊢ (R -∗ ↪[frame] f0 -∗ ▷ (R -∗ ↪[frame] f0 -∗ WP es' @ s ; E {{ Φ }}) -∗
-      WP es @ s ; E {{ Φ }} : IProp GF) := by
-  let := @WasmG.invGS hlc GF _
-  iintro HR Hf HΦ
-  iapply IrisWp.wp_lift_step (fun f => iprop(↪[frame] f)) (ι := wasmIrisGS) hnv
-  iintro %σ %ns %obs %obs' %nt Hσ
-  rcases σ with ⟨ws, locs, inst⟩
-  ihave %Hred : ⌜Frame.mk locs inst = f0 → Reduce ws f0 es ws f0 es'⌝ $$ [Hσ HR]
-  · iapply hred; iframe
-  ihave %Hfeq : ⌜f0 = ⟨locs, inst⟩⌝ $$ [Hσ Hf]
-  · simp only [Iris.StateInterp.stateInterp, IrisWasm.stateInterp]
-    icases Hσ with ⟨-, -, -, -, Hfr, -⟩
-    iapply frame_agree $$ Hfr Hf
-  subst Hfeq
-  have Hred := Hred rfl
-  iapply fupd_mask_intro Std.LawfulSet.empty_subset
-  iintro Hcls
-  isplitr
-  · ipureintro
-    cases s <;> simp only [Stuckness.MaybeReducible]
-    exact ⟨[], _, (ws, locs, inst), [], Hred, rfl, rfl⟩
-  inext
-  iintro %e₂ %σ₂ %eₜ %Hstep -
-  rcases σ₂ with ⟨ws', locs', inst'⟩
-  obtain ⟨H, rfl, rfl⟩ := Hstep
-  rcases reduce_det H Hred with h | ⟨_, h⟩ | ⟨_, _, _, h, -⟩
-  · simp only [Prod.mk.injEq, Frame.mk.injEq] at h
-    obtain ⟨rfl, ⟨rfl, rfl⟩, rfl⟩ := h
-    imod Hcls
-    imodintro
-    iframe Hσ
-    iexists _
-    iframe Hf
-    isplitl
-    · iintro Hf
-      iapply HΦ $$ HR Hf
-    simp; exact .rfl
-  · exact absurd h (hgrow _)
-  · exact absurd h (htrap _)
-
 /-- `[.trap]` is a value: frame the post-condition. -/
 private theorem wp_trap_value {s : Stuckness} {E : CoPset} {Φ : Val → IProp GF} :
     Φ .trapV ⊢ WP ([.trap] : Expr) @ s ; E {{ Φ }} :=
@@ -116,9 +56,12 @@ private theorem stabAddr_none_of_size {ws : StoreRecord} {f : Frame} {j k max : 
     simp only [htab, List.getElem?_cons_zero, Option.some.injEq] at hc
     subst hc
     simp only [gmap_of_list_lookup, List.getElem?_map] at h
-    cases ht : ws.tables[ta]? <;> simp [ht, tabSize] at h
-    simp [stabAddr, htab, stabIndex, optionBind, ht]
-    rw [List.getElem?_eq_none (by omega)]
+    cases ht : ws.tables[ta]? with
+    | none => simp [ht] at h
+    | some t =>
+      have hsize : t.entries.size = max := by simpa [ht, tabSize] using h
+      have ho := (RunTable.get?_eq_none_iff t.entries k).2 (hsize ▸ hk)
+      simp [stabAddr, htab, stabIndex, optionBind, ht, ho]
 
 private theorem stabAddr_notable {ws : StoreRecord} {f : Frame} {k : Nat}
     (hc : f.inst.tab[0]? = none) : stabAddr ws f k = none := by
@@ -127,7 +70,6 @@ private theorem stabAddr_notable {ws : StoreRecord} {f : Frame} {k : Nat}
   | cons ta _ => simp [htab] at hc
 /-! ### Native invocations -/
 
-@[rocq_alias iriswasm.wp_invoke_native]
 theorem wp_invoke_native (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (ves : Expr)
     (vcs : List Value) (t1s t2s ts : List ValueType) (a : Nat) (es : List BasicInstruction)
     (i : Instance) (m : Nat) (f : Frame) :
@@ -135,7 +77,7 @@ theorem wp_invoke_native (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (v
     ⊢ (↪[frame] f -∗
       a ↦[wf] (.funcNative i (.tf t1s t2s) ts es) -∗
       ▷ (↪[frame] f ∗ a ↦[wf] (.funcNative i (.tf t1s t2s) ts es) -∗
-        WP ([.local m ⟨vcs ++ nZeros ts, i⟩ [.basic (.block (.tf [] t2s) es)]] : Expr)
+        WP ([.local m ⟨vcs ++ nZeros ts, i⟩ [.label m [] (toEList es)]] : Expr)
           @ s ; E {{ v, Φ v }}) -∗
       WP (ves ++ [.invoke a]) @ s ; E {{ v, Φ v }} : IProp GF) := by
   intro hparams hlen hret
@@ -143,7 +85,7 @@ theorem wp_invoke_native (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (v
   have hfi : firstInstr (ves ++ [.invoke a]) = some (.invoke a, 0) := by
     rw [first_instr_const _ _ hconst]; simp [firstInstr_cons, firstInstrInstr]
   have := wp_det_step (s := s) (E := E) (Φ := Φ) (f0 := f) (es := ves ++ [.invoke a])
-    (es' := [.local m ⟨vcs ++ nZeros ts, i⟩ [.basic (.block (.tf [] t2s) es)]])
+    (es' := [.local m ⟨vcs ++ nZeros ts, i⟩ [.label m [] (toEList es)]])
     iprop(a ↦[wf] (.funcNative i (.tf t1s t2s) ts es))
     (to_val_cat_None2 _ _ hconst (by simp [toVal, mergeValuesList, toValInstr, mergeValues, valNotValCombine, valCombine]))
     ?_ (by simp [hfi]) (by simp [hfi])
@@ -207,23 +149,8 @@ theorem wp_call_ctx (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (f0 : F
       ▷ (↪[frame] f0 -∗ WP ([.invoke a] : Expr) @ s ; E CTX j ; lh {{ v, Φ v }}) -∗
       WP ([.basic (.call i)] : Expr) @ s ; E CTX j ; lh {{ v, Φ v }} : IProp GF) := by
   intro hfun
-  unfold wpWasmCtx
-  iintro Hf HΦ %LI %Hfill
-  obtain ⟨LI', hfill'⟩ := lfilled_swap [.invoke a] Hfill
-  have hfi := starts_with_lfilled (.basic (.call i)) 0 _ _ _ _ (by simp [firstInstr_cons, firstInstrInstr]) Hfill
-  have := wp_det_step (s := s) (E := E) (Φ := Φ) (f0 := f0) (es := LI) (es' := LI') iprop(emp)
-    (toVal_lfilled_none (by simp [toVal, mergeValuesList, toValInstr, mergeValues, valNotValCombine, valCombine]) Hfill) ?_
-    (by simp [hfi]) (by simp [hfi])
-  · iapply this $$ [] Hf
-    · iempintro
-    inext
-    iintro - Hf
-    iapply HΦ $$ Hf %LI' %hfill'
-  · intro ws locs inst
-    iintro -
-    ipureintro
-    rintro rfl
-    exact .label _ _ _ _ (.call hfun) Hfill hfill'
+  exact wp_ctx_det_step (x := .basic (.call i)) (k := 0) (fun _ => .call hfun)
+    (by simp [firstInstr_cons, firstInstrInstr]) (by simp) (by simp)
 
 @[rocq_alias iriswasm.wp_call]
 theorem wp_call (s : Stuckness) (E : CoPset) (Φ : Val → IProp GF) (f0 : Frame) (i a : Nat) :

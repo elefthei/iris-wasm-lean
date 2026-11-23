@@ -12,15 +12,15 @@ namespace IrisWasm
 open Wasm Helpers.ReduceDetPrelude
 open AdministrativeInstruction (basic trap)
 
-@[rocq_alias iriswasm.loop_det]
-theorem loop_det {vs : List AdministrativeInstruction} {n m : Nat} {t1s t2s : List ValueType}
+theorem loop_det {vs : List AdministrativeInstruction} {bt : BlockType} {t1s t2s : List ValueType}
     {s : StoreRecord} {f : Frame} {es : List BasicInstruction} {s' : StoreRecord} {f' : Frame}
     {es' : List AdministrativeInstruction} :
-    constList vs = true → vs.length = n → t1s.length = n → t2s.length = m →
-    Reduce s f (vs ++ [basic (.loop (.tf t1s t2s) es)]) s' f' es' →
-    reduceDetGoal s f [.label n [basic (.loop (.tf t1s t2s) es)] (vs ++ toEList es)] s' f' es'
-      (vs ++ [basic (.loop (.tf t1s t2s) es)]) := by
-  intro _ _ _ _ Hred
-  only_one Hred
+    expandBlockType f.inst.types bt = some (.tf t1s t2s) →
+    constList vs = true → vs.length = t1s.length →
+    Reduce s f (vs ++ [basic (.loop bt es)]) s' f' es' →
+    reduceDetGoal s f [.label t1s.length [basic (.loop bt es)] (vs ++ toEList es)] s' f' es'
+      (vs ++ [basic (.loop bt es)]) := by
+  intro hsig hc hlen hr
+  only_one hr <;> simp_all
 
 end IrisWasm

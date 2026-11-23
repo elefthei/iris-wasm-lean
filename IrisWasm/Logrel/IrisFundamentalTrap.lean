@@ -31,8 +31,8 @@ instance wmPointsTo_timeless (n i : Nat) (q : DFrac) (b : Byte) :
   @instTimelessPointsTo _ _ _ _ _ WasmG.memHs _ _ _
 
 omit [LogrelNaInvs GF] in
-instance wmlengthPointsTo_timeless (n k : Nat) :
-    Timeless (iprop(n ↦[wmlength] k) : IProp GF) :=
+instance wmlengthPointsTo_timeless (n : Nat) (aw : AddrType) (len : Nat) :
+    Timeless (iprop(n ↦[wmlength] (aw, len)) : IProp GF) :=
   @instTimelessPointsTo _ _ _ _ _ WasmG.memsizeHs _ _ _
 
 /-- Lean-only: reduces `semantic_typing` to the case of an immediate-value input (the trap input
@@ -90,7 +90,16 @@ omit [LogrelNaInvs GF] in
 theorem interp_value_types_agree (t : ValueType) (w : Value) :
     ⊢ (interpValue t w -∗ ⌜typesAgree t w = true⌝ : IProp GF) := by
   cases t <;> simp only [interpValue, interpValueI32, interpValueI64, interpValueF32,
-    interpValueF64] <;> iintro %⟨z, rfl⟩ <;> ipureintro <;> rfl
+    interpValueF64, interpValueV128] <;> iintro %⟨z, rfl⟩ <;> ipureintro <;> rfl
+
+omit [LogrelNaInvs GF] in
+theorem interp_address_operand (aw : AddrType) (v : Value) :
+    ⊢ (interpValue aw.valueType v -∗ ⌜∃ c : AddressOperand, c.value = v ∧ c.address = aw⌝ :
+      IProp GF) := by
+  iintro Hv
+  ihave %ht := interp_value_types_agree aw.valueType v $$ Hv
+  ipureintro
+  exact AddressOperand.exists_of_type (by simpa [typesAgree] using ht)
 
 @[rocq_alias iriswasm.typing_trap]
 theorem typing_trap (C : TContext) (tf : FunctionType) :

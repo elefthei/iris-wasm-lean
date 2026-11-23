@@ -4,19 +4,11 @@ Released under MIT license as described in the file LICENSE.
 Authors: Iris-Wasm Lean port contributors
 -/
 import Wasm.Operations
+import Wasm.ExternalTypes
 
 /-! Port of `theories/typing.v`: Wasm typing rules. -/
 
 namespace Wasm
-
-@[rocq_alias iriswasm.convert_helper]
-def convertHelper (sxo : Option Sx) (t1 t2 : ValueType) : Bool :=
-  (sxo == none) ==
-  ((isFloatT t1 && isFloatT t2) || (isIntT t1 && isIntT t2 && decide (lengthT t1 < lengthT t2)))
-
-@[rocq_alias iriswasm.convert_cond]
-def convertCond (t1 t2 : ValueType) (sxo : Option Sx) : Bool :=
-  t1 != t2 && convertHelper sxo t1 t2
 
 @[rocq_alias iriswasm.upd_label]
 def updLabel (C : TContext) (lab : List (List ValueType)) : TContext := { C with label := lab }
@@ -35,6 +27,20 @@ inductive UnopTypeAgree : ValueType → Unop → Prop
   | i64Agree {op} : UnopTypeAgree .i64 (.i op)
   | f32Agree {op} : UnopTypeAgree .f32 (.f op)
   | f64Agree {op} : UnopTypeAgree .f64 (.f op)
+  | extendI32x8 : UnopTypeAgree .i32 (.extendS .i8)
+  | extendI32x16 : UnopTypeAgree .i32 (.extendS .i16)
+  | extendI64 {p} : UnopTypeAgree .i64 (.extendS p)
+  | vnot : UnopTypeAgree .v128 .vnot
+
+theorem unopTypeOK_iff (t : ValueType) (op : Unop) :
+    unopTypeOK t op = true ↔ UnopTypeAgree t op := by
+  constructor
+  · intro h
+    cases op with
+    | i | f | vnot => cases t <;> first | constructor | contradiction
+    | extendS p => cases t <;> cases p <;> first | constructor | contradiction
+  · intro h
+    cases h <;> first | rfl | (rename_i p; cases p <;> rfl)
 
 @[rocq_alias iriswasm.binop_type_agree]
 inductive BinopTypeAgree : ValueType → Binop → Prop
@@ -42,6 +48,13 @@ inductive BinopTypeAgree : ValueType → Binop → Prop
   | i64Agree {op} : BinopTypeAgree .i64 (.i op)
   | f32Agree {op} : BinopTypeAgree .f32 (.f op)
   | f64Agree {op} : BinopTypeAgree .f64 (.f op)
+  | vec {op} : BinopTypeAgree .v128 (.v op)
+
+theorem binopTypeOK_iff (t : ValueType) (op : Binop) :
+    binopTypeOK t op = true ↔ BinopTypeAgree t op := by
+  constructor
+  · intro h; cases op <;> cases t <;> first | constructor | contradiction
+  · intro h; cases h <;> rfl
 
 @[rocq_alias iriswasm.relop_type_agree]
 inductive RelopTypeAgree : ValueType → Relop → Prop
@@ -50,29 +63,40 @@ inductive RelopTypeAgree : ValueType → Relop → Prop
   | f32Agree {op} : RelopTypeAgree .f32 (.f op)
   | f64Agree {op} : RelopTypeAgree .f64 (.f op)
 
+theorem relopTypeOK_iff (t : ValueType) (op : Relop) :
+    relopTypeOK t op = true ↔ RelopTypeAgree t op := by
+  constructor
+  · intro h; cases op <;> cases t <;> first | constructor | contradiction
+  · intro h; cases h <;> rfl
+
 @[rocq_alias iriswasm.be_typing]
 inductive BeTyping : TContext → List BasicInstruction → FunctionType → Prop
   | const {C v} : BeTyping C [.const v] (.tf [] [typeof v])
   | unop {C t op} : UnopTypeAgree t op → BeTyping C [.unop t op] (.tf [t] [t])
   | binop {C t op} : BinopTypeAgree t op → BeTyping C [.binop t op] (.tf [t, t] [t])
-  | testop {C t op} : isIntT t = true → BeTyping C [.testop t op] (.tf [t] [.i32])
+  | testop {C t op} : testopTypeOK t op = true → BeTyping C [.testop t op] (.tf [t] [.i32])
   | relop {C t op} : RelopTypeAgree t op → BeTyping C [.relop t op] (.tf [t, t] [.i32])
   | convert {C t1 t2 sx} : t1 ≠ t2 → convertHelper sx t1 t2 = true →
       BeTyping C [.cvtop t1 .convert t2 sx] (.tf [t2] [t1])
   | reinterpret {C t1 t2} : t1 ≠ t2 → Nat.beq (lengthT t1) (lengthT t2) = true →
       BeTyping C [.cvtop t1 .reinterpret t2 none] (.tf [t2] [t1])
+  | truncSat {C dst src sx} : isIntT dst = true → isFloatT src = true →
+      BeTyping C [.cvtop dst .truncSat src (some sx)] (.tf [src] [dst])
   | unreachable {C ts ts'} : BeTyping C [.unreachable] (.tf ts ts')
   | nop {C} : BeTyping C [.nop] (.tf [] [])
   | drop {C t} : BeTyping C [.drop] (.tf [t] [])
   | select {C t} : BeTyping C [.select] (.tf [t, t, .i32] [t])
-  | block {C tn tm es} : BeTyping (updLabel C ([tm] ++ C.label)) es (.tf tn tm) →
-      BeTyping C [.block (.tf tn tm) es] (.tf tn tm)
-  | loop {C tn tm es} : BeTyping (updLabel C ([tn] ++ C.label)) es (.tf tn tm) →
-      BeTyping C [.loop (.tf tn tm) es] (.tf tn tm)
-  | ifWasm {C tn tm es1 es2} :
+  | vbitselect {C} : BeTyping C [.vbitselect] (.tf [.v128, .v128, .v128] [.v128])
+  | block {C bt tn tm es} : expandBlockType C.typesT bt = some (.tf tn tm) →
+      BeTyping (updLabel C ([tm] ++ C.label)) es (.tf tn tm) →
+      BeTyping C [.block bt es] (.tf tn tm)
+  | loop {C bt tn tm es} : expandBlockType C.typesT bt = some (.tf tn tm) →
+      BeTyping (updLabel C ([tn] ++ C.label)) es (.tf tn tm) →
+      BeTyping C [.loop bt es] (.tf tn tm)
+  | ifWasm {C bt tn tm es1 es2} : expandBlockType C.typesT bt = some (.tf tn tm) →
       BeTyping (updLabel C ([tm] ++ C.label)) es1 (.tf tn tm) →
       BeTyping (updLabel C ([tm] ++ C.label)) es2 (.tf tn tm) →
-      BeTyping C [.if_ (.tf tn tm) es1 es2] (.tf (tn ++ [.i32]) tm)
+      BeTyping C [.if_ bt es1 es2] (.tf (tn ++ [.i32]) tm)
   | br {C i t1s ts t2s} : i < C.label.length → plop2 C i ts = true →
       BeTyping C [.br i] (.tf (t1s ++ ts) t2s)
   | brIf {C i ts} : i < C.label.length → plop2 C i ts = true →
@@ -94,12 +118,16 @@ inductive BeTyping : TContext → List BasicInstruction → FunctionType → Pro
       BeTyping C [.getGlobal i] (.tf [] [t])
   | setGlobal {C i g t} : i < C.global.length → C.global[i]? = some g → g.t = t →
       isMut g = true → BeTyping C [.setGlobal i] (.tf [t] [])
-  | load {C a off tpSx t} : C.memory ≠ [] → loadStoreTBounds a (optionProjl tpSx) t = true →
-      BeTyping C [.load t tpSx a off] (.tf [.i32] [t])
-  | store {C a off tp t} : C.memory ≠ [] → loadStoreTBounds a tp t = true →
-      BeTyping C [.store t tp a off] (.tf [.i32, t] [])
-  | currentMemory {C} : C.memory ≠ [] → BeTyping C [.currentMemory] (.tf [] [.i32])
-  | growMemory {C} : C.memory ≠ [] → BeTyping C [.growMemory] (.tf [.i32] [.i32])
+  | load {C ma tpSx t mt} : C.memory[ma.memory]? = some mt →
+      loadStoreTBounds ma.align (optionProjl tpSx) t = true → ma.offset < 2^mt.address.width →
+      BeTyping C [.load t tpSx ma] (.tf [mt.address.valueType] [t])
+  | store {C ma tp t mt} : C.memory[ma.memory]? = some mt →
+      loadStoreTBounds ma.align tp t = true → ma.offset < 2^mt.address.width →
+      BeTyping C [.store t tp ma] (.tf [mt.address.valueType, t] [])
+  | currentMemory {C x mt} : C.memory[x]? = some mt →
+      BeTyping C [.currentMemory x] (.tf [] [mt.address.valueType])
+  | growMemory {C x mt} : C.memory[x]? = some mt →
+      BeTyping C [.growMemory x] (.tf [mt.address.valueType] [mt.address.valueType])
   | empty {C} : BeTyping C [] (.tf [] [])
   | composition {C es e t1s t2s t3s} : BeTyping C es (.tf t1s t2s) →
       BeTyping C [e] (.tf t2s t3s) → BeTyping C (es ++ [e]) (.tf t1s t3s)
@@ -129,9 +157,9 @@ def globalAgree (g : Global) (tg : GlobalType) : Bool :=
 def globalsAgree (gs : List Global) (n : Nat) (tg : GlobalType) : Bool :=
   decide (n < gs.length) && ((gs[n]?).map (globalAgree · tg) == some true)
 
-@[rocq_alias iriswasm.mem_typing]
+#rocq_ignore iriswasm.mem_typing "Core import matching compares numerical maxima"
 def memTyping (m : Memory) (mt : MemoryType) : Bool :=
-  decide (mt.min ≤ memSize m) && m.maxOpt == mt.max
+  m.type.matches mt
 
 @[rocq_alias iriswasm.memi_agree]
 def memiAgree (ms : List Memory) (n : Nat) (memT : MemoryType) : Bool :=
@@ -144,13 +172,9 @@ def memiAgree (ms : List Memory) (n : Nat) (memT : MemoryType) : Bool :=
 def functionsAgree (fs : List FunctionClosure) (n : Nat) (f : FunctionType) : Bool :=
   decide (n < fs.length) && ((fs[n]?).map clType == some f)
 
-/-- Coq writes `table_max_opt t <= lim_max` on `option N`; it elaborates through the ssreflect
-coercions `isSome : option >-> bool` and `nat_of_bool`, i.e. it only says
-"if the table has a max then so does the type". Reproduced literally. -/
-@[rocq_alias iriswasm.tab_typing]
+#rocq_ignore iriswasm.tab_typing "Core import matching compares numerical maxima"
 def tabTyping (t : Tableinst) (tt : TableType) : Bool :=
-  decide (tt.limits.min ≤ tabSize t) &&
-  decide ((if t.maxOpt.isSome then 1 else 0) ≤ (if tt.limits.max.isSome then 1 else 0))
+  (Limits.mk (tabSize t) t.maxOpt).matches tt.limits
 
 @[rocq_alias iriswasm.tabi_agree]
 def tabiAgree (ts : List Tableinst) (n : Nat) (tabT : TableType) : Bool :=
@@ -243,11 +267,16 @@ def TabsizeAgree (t : Tableinst) : Prop :=
 def TabAgree (s : StoreRecord) (t : Tableinst) : Prop :=
   (∀ x ∈ t.data, TabclAgree s x) ∧ TabsizeAgree t
 
-@[rocq_alias iriswasm.mem_agree]
 def MemAgree (m : Memory) : Prop :=
-  match m.maxOpt with
-  | none => True
-  | some n => memSize m ≤ n
+  limitTyping m.type.limits m.type.address.pageLimit = true ∧
+    lengthMem m = m.type.limits.min * pageSize
+
+theorem MemAgree.min_eq {m : Memory} (h : MemAgree m) : m.type.limits.min = memSize m := by
+  simp [memSize, h.2, pageSize]
+
+theorem MemAgree.wellSized {m : Memory} (h : MemAgree m) : WellSized m.type.address (lengthMem m) := by
+  obtain ⟨hmin, _⟩ := (limitTyping_iff ..).mp h.1
+  simp [WellSized, h.2, pageSize, hmin]
 
 @[rocq_alias iriswasm.store_typing]
 def StoreTyping (s : StoreRecord) : Prop :=

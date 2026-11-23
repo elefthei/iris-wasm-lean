@@ -13,15 +13,18 @@ open Wasm
 
 #rocq_ignore iriswasm.first_not_const "Ltac used only inside reduction_core's Coq proof"
 
-/-- Number of constants the non-constant instruction `e` consumes when it reduces in store `s`. -/
-def redexArity (s : StoreRecord) : AdministrativeInstruction → Nat
+/-- Operand count of a redex in its active frame. Failed lookups give only a lower bound. -/
+def redexArity (s : StoreRecord) (f : Frame) : AdministrativeInstruction → Nat
   | .basic b =>
     match b with
     | .drop | .unop .. | .testop .. | .cvtop .. | .if_ .. | .brIf _ | .brTable .. | .teeLocal _
-    | .setLocal _ | .setGlobal _ | .load .. | .growMemory | .callIndirect _ => 1
+    | .setLocal _ | .setGlobal _ | .load .. | .growMemory _ | .callIndirect _ => 1
     | .binop .. | .relop .. | .store .. => 2
-    | .select => 3
-    | .block (.tf t1s _) _ | .loop (.tf t1s _) _ => t1s.length
+    | .select | .vbitselect => 3
+    | .block bt _ | .loop bt _ =>
+      match expandBlockType f.inst.types bt with
+      | some (.tf ins _) => ins.length
+      | none => 0
     | _ => 0
   | .invoke a =>
     match s.funcs[a]? with
@@ -29,12 +32,12 @@ def redexArity (s : StoreRecord) : AdministrativeInstruction → Nat
     | none => 0
   | _ => 0
 
-/-- Shape of a single reduction: either a redex `vs ++ [e]` (consuming exactly `redexArity s e`
+/-- Shape of a single reduction: either a redex `vs ++ [e]` (consuming exactly `redexArity s f e`
 constants) under a constant prefix, or a top-level trap preceded only by constants. -/
 def Decomp (s : StoreRecord) (f : Frame) (es : List AdministrativeInstruction)
     (s' : StoreRecord) (f' : Frame) (es' : List AdministrativeInstruction) : Prop :=
   (∃ bc vs e ac core', constList bc = true ∧ constList vs = true ∧ isConst e = false ∧
-    e ≠ .trap ∧ vs.length = redexArity s e ∧ es = bc ++ (vs ++ [e]) ++ ac ∧
+    e ≠ .trap ∧ vs.length = redexArity s f e ∧ es = bc ++ (vs ++ [e]) ++ ac ∧
     es' = bc ++ core' ++ ac ∧ Reduce s f (vs ++ [e]) s' f' core') ∨
   ∃ vs ac, constList vs = true ∧ es = vs ++ .trap :: ac ∧ (s, f) = (s', f')
 
@@ -42,7 +45,7 @@ theorem decomp_self {s : StoreRecord} {f : Frame} {s' : StoreRecord} {f' : Frame
     {vs : List AdministrativeInstruction} {e : AdministrativeInstruction}
     {es' : List AdministrativeInstruction} (h : Reduce s f (vs ++ [e]) s' f' es')
     (hvs : constList vs = true) (he : isConst e = false) (ht : e ≠ .trap)
-    (ha : vs.length = redexArity s e) : Decomp s f (vs ++ [e]) s' f' es' :=
+    (ha : vs.length = redexArity s f e) : Decomp s f (vs ++ [e]) s' f' es' :=
   .inl ⟨[], vs, e, [], es', rfl, hvs, he, ht, ha, by simp, by simp, h⟩
 
 theorem reduce_decomp {s : StoreRecord} {f : Frame} {es : List AdministrativeInstruction}
@@ -52,8 +55,6 @@ theorem reduce_decomp {s : StoreRecord} {f : Frame} {es : List AdministrativeIns
   induction h with
   | simple hs =>
     cases hs with
-    | block n hc hl ht => exact decomp_self h2 hc rfl (by simp) (by simp [redexArity, *])
-    | loop m hc hl ht => exact decomp_self h2 hc rfl (by simp) (by simp [redexArity, *])
     | trap lh _ hl =>
       rw [lfilled_Ind_Equivalent] at hl
       cases hl with
@@ -64,6 +65,8 @@ theorem reduce_decomp {s : StoreRecord} {f : Frame} {es : List AdministrativeIns
       | exact decomp_self (vs := [_]) h2 (by simp_all [constList, isConst]) rfl (by simp) rfl
       | exact decomp_self (vs := [_, _]) h2 rfl rfl (by simp) rfl
       | exact decomp_self (vs := [_, _, _]) h2 rfl rfl (by simp) rfl
+  | block hsig hc hlen | loop hsig hc hlen =>
+    exact decomp_self h2 hc rfl (by simp) (by simpa [redexArity, hsig] using hlen)
   | invokeNative cl t1s ts vcs n k zs i hcl hcl' hves hn =>
     subst hves
     exact decomp_self h2 (v_to_e_is_const_list _) rfl (by simp)
@@ -95,6 +98,27 @@ theorem reduce_decomp {s : StoreRecord} {f : Frame} {es : List AdministrativeIns
     | exact decomp_self (vs := []) h2 rfl rfl (by simp) rfl
     | exact decomp_self (vs := [_]) h2 rfl rfl (by simp) rfl
     | exact decomp_self (vs := [_, _]) h2 rfl rfl (by simp) rfl
+
+/-- Locate the operands and residual of the first non-constant, non-trapping instruction. -/
+theorem reduce_first_decomp {s f es s' f' es' vs e rest} (h : Reduce s f es s' f' es')
+    (heq : es = vs ++ e :: rest) (hc : constList vs = true) (he : isConst e = false)
+    (ht : e ≠ .trap) :
+    ∃ bc cs m, vs = bc ++ cs ∧ cs.length = redexArity s f e ∧ es' = bc ++ m ++ rest ∧
+      Reduce s f (cs ++ [e]) s' f' m := by
+  rcases reduce_decomp h with
+    ⟨bc, cs, x, ac, m, hbc, hcs, hx, -, ha, hsrc, rfl, hr⟩ | ⟨p, q, hp, hsrc, -⟩
+  · obtain ⟨hp, rfl, rfl⟩ := first_values vs e rest (bc ++ cs) x ac he hx hc
+      (const_list_concat hbc hcs)
+      (by rw [← heq, hsrc]; simp)
+    exact ⟨bc, cs, m, hp, ha, rfl, hr⟩
+  · exact (ht (first_values vs e rest p .trap q he rfl hc hp (heq.symm.trans hsrc)).2.1).elim
+
+theorem redexArity_le {s f vs e s' f' es'} (h : Reduce s f (vs ++ [e]) s' f' es')
+    (hc : constList vs = true) (he : isConst e = false) : redexArity s f e ≤ vs.length := by
+  by_cases ht : e = .trap
+  · subst ht; exact Nat.zero_le _
+  obtain ⟨bc, cs, _, rfl, hlen, -, -⟩ := reduce_first_decomp h rfl hc he ht
+  simp [← hlen]
 
 @[rocq_alias iriswasm.reduction_core]
 theorem reduction_core {bef0 es0 aft0 bef1 es1 aft1 es0' es1' : List AdministrativeInstruction}

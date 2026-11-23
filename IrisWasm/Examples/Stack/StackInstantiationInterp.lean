@@ -153,15 +153,15 @@ theorem instantiate_stack_valid [LogrelNaInvs GF] (s : Stuckness) (E : CoPset)
   icases Hwf with ⟨Hf0, Hf1, Hf2, Hf3, Hf4, Hf5, Hf6, -⟩
   icases Hwt with ⟨Ht, -⟩
   icases Hwm with ⟨Hm, -⟩
-  simp only [memBlock, moduleInstMemBaseFunc, Wasm.lengthMem, MemoryList.lengthMem, List.length_replicate,
+  simp only [memBlock, moduleInstMemBaseFunc, memMk, Wasm.lengthMem, MemoryList.length_make,
     Nat.mul_zero]
-  icases Hm with ⟨-, Hmemlength, -⟩
+  icases Hm with ⟨-, -, Hmemlength, -⟩
   icases Hexphost with ⟨⟨%n0, Hx0⟩, ⟨%n1, Hx1⟩, ⟨%n2, Hx2⟩, ⟨%n3, Hx3⟩, ⟨%n4, Hx4⟩, ⟨%n5, Hx5⟩,
     ⟨%n6, Hx6⟩, ⟨%n7, Hx7⟩, -⟩
   simp only [moduleInstTableBaseCreate, List.getD_cons_succ, List.getD_cons_zero] at ⊢
   simp only [show getImportFuncCount stackModule = 0 from rfl, List.drop_zero] at Hnodupwf
   ihave Hstk := NonAtomicInvariant.inv_alloc (p := LogrelNaInvs.logrelNais (GF := GF)) (E := E)
-      (N := stkN) (P := stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n))
+      (N := stkN) (P := stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n)))
       $$ [Hmemlength]
   · inext
     simp only [stackModuleInv]
@@ -180,7 +180,7 @@ theorem instantiate_stack_valid [LogrelNaInvs GF] (s : Stuckness) (E : CoPset)
     pop, push, stackMap, lengthStack,
     ⟨[.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], [f0, f1, f2, f3, f4, f5, f6], [t], [m], []⟩,
     [.i32], [], [], [.i32], [.i32], [.i32, .i32], [],
-    ⟨[none], none⟩, (fun a b => isStack a b m), (fun n => m ↦[wmlength] n)
+    ⟨RunTable.uniform 1 none, none⟩, (fun a b => isStack a b m), (fun n => m ↦[wmlength] (.i32, n))
   have hkeys : ∀ (ks : List Nat) (l : List FunctionClosure), ks.Nodup → NoDupKeys (ks.zip l) := by
     intro ks l h
     induction ks generalizing l with
@@ -259,7 +259,8 @@ theorem instantiate_stack_valid [LogrelNaInvs GF] (s : Stuckness) (E : CoPset)
   isplitr
   · iexact Hstk
   isplitr
-  · iapply BI.BigSepL.bigSepL_singleton.2
+  · simp only [Tableinst.data, RunTable.toList_uniform, List.replicate_succ, List.replicate_zero]
+    iapply BI.BigSepL.bigSepL_singleton.2
     ipureintro; rfl
   iapply (BI.BigSepM.bigSepM_ofList (hkeys _ _ (by simp at Hnodupwf ⊢; grind))).2
   simp only [List.zip_cons_cons, List.zip_nil_left]

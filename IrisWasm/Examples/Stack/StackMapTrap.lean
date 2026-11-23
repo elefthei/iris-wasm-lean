@@ -194,7 +194,7 @@ theorem spec_map_loop_j_trap (f : Frame) (s : List I32) (v n : Nat) (E : CoPset)
             (⌜w = .immV []⌝ ∗ (∃ s', isStack v s' n ∗ stackAll2 s s' Ψ))) ∗
           (∃ f1, ↪[frame] f1 ∗ NonAtomicInvariant.own logrelNais ⊤ ∗ ⌜f.inst = f1.inst⌝)))
         2 (pushBase (.rec_ [] 0 [] (.base [] []) []) 0
-          [.basic (.loop (.tf [] []) mapLoopBody)] [] [])
+          [.basic (.loop (.result none) mapLoopBody)] [] [])
       : IProp GF) := by
   intro hsub
   induction j generalizing f s' with
@@ -301,7 +301,7 @@ theorem spec_stack_map_op_trap (f0 : Frame) (n : Immediate) (f : I32) (v : Nat) 
   let fr : Frame :=
     ⟨(f0.locs.set 3 (valueOfUint (v + s.length * 4))).set 2 (valueOfUint v), f0.inst⟩
   rw [show (toEList mapOp : Expr) = toEList mapInitialise ++
-    [.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])] by simp [mapOp, toEList]]
+    [.basic (.block (.result none) [.loop (.result none) mapLoopBody])] by simp [mapOp, toEList]]
   iapply wp_seq_imm [] iprop(isStack v s n ∗ ↪[frame] fr) $$ [Hs Hf]
   · iapply spec_map_initialise f0 s v n E $$ [Hs Hf]
     · iframe; ipureintro; exact ⟨hmem, hl0, hlen⟩
@@ -309,16 +309,16 @@ theorem spec_stack_map_op_trap (f0 : Frame) (n : Immediate) (f : I32) (v : Nat) 
     iframe; ipureintro; exact hw
   iintro ⟨Hs, Hf⟩
   isimp only [vToEList, List.map_nil, List.nil_append]
-  rw [show ([AdministrativeInstruction.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])]
-    : Expr) = [] ++ [.basic (.block (.tf [] []) [.loop (.tf [] []) mapLoopBody])] from rfl]
-  iapply wp_block rfl rfl rfl rfl $$ Hf
+  rw [show ([AdministrativeInstruction.basic (.block (.result none) [.loop (.result none) mapLoopBody])]
+    : Expr) = [] ++ [.basic (.block (.result none) [.loop (.result none) mapLoopBody])] from rfl]
+  iapply wp_block (bt := .result none) (m := 0) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply (wandIff_equiv (wp_wasm_empty_ctx _ _ _ _)).2
   iapply wp_label_push_nil
   simp only [List.nil_append, toEList, List.map_cons, List.map_nil]
-  rw [show ([AdministrativeInstruction.basic (.loop (.tf [] []) mapLoopBody)] : Expr) =
-    [] ++ [.basic (.loop (.tf [] []) mapLoopBody)] from rfl]
-  iapply wp_loop_ctx rfl rfl rfl rfl $$ Hf
+  rw [show ([AdministrativeInstruction.basic (.loop (.result none) mapLoopBody)] : Expr) =
+    [] ++ [.basic (.loop (.result none) mapLoopBody)] from rfl]
+  iapply wp_loop_ctx (bt := .result none) rfl rfl rfl rfl rfl $$ Hf
   iintro !> Hf
   iapply wp_label_push_nil
   simp only [List.nil_append, List.length_nil, Nat.reduceAdd]

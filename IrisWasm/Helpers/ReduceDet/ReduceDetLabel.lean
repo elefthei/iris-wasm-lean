@@ -41,9 +41,9 @@ theorem label_det {s : StoreRecord} {f : Frame} {es : List AdministrativeInstruc
     · subst hxt
       exact goal_trap (.label _ _ 0 _ H H1 H2) Hred2 (vs := bef ++ u) (rest := w ++ aft) (by simp)
         (const_list_concat hbef hu)
-    obtain ⟨vs0, cs, m, hbu, hl, rfl, hr⟩ := reduce_decomp Hred2 (vs := bef ++ u)
+    obtain ⟨vs0, cs, m, hbu, hl, rfl, hr⟩ := reduce_first_decomp Hred2 (vs := bef ++ u)
       (rest := w ++ aft) (by simp) (const_list_concat hbef hu) hx hxt
-    obtain ⟨vs0', cs', m', rfl, hl', -, -⟩ := reduce_decomp H rfl hu hx hxt
+    obtain ⟨vs0', cs', m', rfl, hl', -, -⟩ := reduce_first_decomp H rfl hu hx hxt
     have hbu' : (bef ++ vs0') ++ cs' = vs0 ++ cs := by simpa using hbu
     obtain ⟨rfl, rfl⟩ := List.append_inj' hbu' (hl'.trans hl.symm)
     have hb1 := lfilled_base' (aft := w) (es := cs' ++ [x]) (const_list_split hu).1
@@ -61,9 +61,9 @@ theorem label_det {s : StoreRecord} {f : Frame} {es : List AdministrativeInstruc
     obtain ⟨bef, n, es0, lh', aft, LI0, rfl, hbef, hf, rfl⟩ := lfilledS H1
     obtain ⟨bef', n', es0', lh'', aft', LI1, hh, -, hf', rfl⟩ := lfilledS H2
     cases hh
-    obtain ⟨vs0, cs, m, rfl, hl, rfl, hr⟩ := reduce_decomp Hred2 rfl hbef (by simp [isConst])
+    obtain ⟨vs0, cs, m, rfl, hl, rfl, hr⟩ := reduce_first_decomp Hred2 rfl hbef (by simp [isConst])
       (by simp)
-    obtain rfl : cs = [] := List.eq_nil_of_length_eq_zero (by simpa [arity] using hl)
+    obtain rfl : cs = [] := List.eq_nil_of_length_eq_zero (by simpa [redexArity] using hl)
     rcases inv_label' (by simpa using hr) with ⟨-, -, hst⟩ | ⟨LI', hLI, rfl⟩
     · exact (label_step_no_reduce hst (.label _ _ j lh' H hf hf')).elim
     · have g := IHnnn _ _ _ _ _ _ (.label _ _ j lh' H hf hf') hLI

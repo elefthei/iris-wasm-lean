@@ -21,7 +21,7 @@ the stack as a u32. -/
 @[rocq_alias iriswasm.length_stack_op]
 def lengthStackOp : List BasicInstruction :=
   [ .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     .getLocal 0,
     .binop .i32 (.i .sub),
     i32const 4,
@@ -114,14 +114,14 @@ theorem spec_stack_length_op (f0 : Frame) (n v : Nat) (s : List I32) (E : CoPset
   isplitr
   · iintro ⟨%h, -⟩; cases h
   isplitl [Hf]
-  · iapply wp_binop (sub_uint v (s.length * 4)) $$ Hf
+  · iapply wp_binop rfl rfl .i32Agree (sub_uint v (s.length * 4)) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   subst hw
   simp only [ofVal, vToEList, List.map, List.cons_append, List.nil_append]
   iapply wp_wand_s $$ [Hf]
   · iapply wp_binop (Φ := fun w => iprop(⌜w = .immV [valueOfUint s.length]⌝))
-      (div4_uint _ (by unfold two14 at Hlens; omega)) $$ Hf
+      rfl rfl .i32Agree (div4_uint _ (by unfold two14 at Hlens; omega)) $$ Hf
     inext; ipureintro; rfl
   iintro %w ⟨%hw, Hf⟩
   iapply HΦ

@@ -14,9 +14,9 @@ import Iris.Instances.Lib.FUpd
 
 /-! Port of `theories/iris/language/iris_wp_def.v`.
 
-The heaps of `WasmG` are deliberately *not* instances: two pairs of them share the same
-`(L, V)` (`tabsize`/`memsize`, `tablimit`/`memlimit`), so every use selects its heap explicitly
-via `(G := WasmG.<heap>)`. The points-to notations below do this for you. -/
+The heaps of `WasmG` are deliberately *not* instances: table and memory limits share the same
+`(L, V)`, so each use selects its heap explicitly via `(G := WasmG.<heap>)`.
+The points-to notations below do this for you. -/
 
 namespace IrisWasm
 
@@ -33,7 +33,7 @@ open Iris Iris.BI Iris.ProgramLogic Iris.Std Wasm
 /-- The single-key map holding the current frame (`gmap unit frame`). -/
 abbrev UnitMapF := fun V => Std.ExtTreeMap Unit V compare
 
-@[rocq_alias iriswasm.wasmG]
+#rocq_ignore iriswasm.wasmG "Memory metadata ties address width and declared minimum to byte length"
 class WasmG (hlc : outParam HasLC) (GF : BundledGFunctors) where
   [invGS : InvGS_gen hlc GF]
   funcHs : genHeapGS Nat FunctionClosure GF NatMap
@@ -41,7 +41,7 @@ class WasmG (hlc : outParam HasLC) (GF : BundledGFunctors) where
   tabsizeHs : genHeapGS Nat Nat GF NatMap
   tablimitHs : genHeapGS Nat (Option Nat) GF NatMap
   memHs : genHeapGS (Nat × Nat) Byte GF NatPairMap
-  memsizeHs : genHeapGS Nat Nat GF NatMap
+  memsizeHs : genHeapGS Nat (AddrType × Nat × Nat) GF NatMap
   memlimitHs : genHeapGS Nat (Option Nat) GF NatMap
   globHs : genHeapGS Nat Global GF NatMap
   locsHs : GhostMapG GF Unit Frame UnitMapF
@@ -67,18 +67,18 @@ variable [WasmG hlc GF]
 def frameOwn (q : DFrac) (f : Frame) : IProp GF :=
   ghost_map_elem (H := UnitMapF) (WasmG.frameGName GF) q () f
 
-@[rocq_alias iriswasm.gen_heap_wasm_store]
+#rocq_ignore iriswasm.gen_heap_wasm_store "Core memories own width and byte length together"
 def genHeapWasmStore (s : StoreRecord) : IProp GF := iprop(
   genHeapInterp (G := WasmG.funcHs) (gmapOfList s.funcs) ∗
   genHeapInterp (G := WasmG.tabHs) (gmapOfTable s.tables) ∗
   genHeapInterp (G := WasmG.memHs) (gmapOfMemory s.mems) ∗
   genHeapInterp (G := WasmG.globHs) (gmapOfList s.globals) ∗
-  genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (s.mems.map lengthMem)) ∗
+  genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (s.mems.map memLengthMeta)) ∗
   genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (s.tables.map tabSize)) ∗
-  genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (s.mems.map (·.maxOpt))) ∗
+  genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (s.mems.map (·.type.limits.max))) ∗
   genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (s.tables.map (·.maxOpt))))
 
-@[rocq_alias iriswasm.state_interp]
+#rocq_ignore iriswasm.state_interp "Core memories own width and byte length together"
 def stateInterp : State → IProp GF
   | (s, locs, inst) => iprop(
     genHeapInterp (G := WasmG.funcHs) (gmapOfList s.funcs) ∗
@@ -87,9 +87,9 @@ def stateInterp : State → IProp GF
     genHeapInterp (G := WasmG.globHs) (gmapOfList s.globals) ∗
     ghost_map_auth (WasmG.frameGName GF) (DFrac.own 1)
       (insert (PartialMap.empty : UnitMapF Frame) () ⟨locs, inst⟩) ∗
-    genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (s.mems.map lengthMem)) ∗
+    genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (s.mems.map memLengthMeta)) ∗
     genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (s.tables.map tabSize)) ∗
-    genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (s.mems.map (·.maxOpt))) ∗
+    genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (s.mems.map (·.type.limits.max))) ∗
     genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (s.tables.map (·.maxOpt))))
 
 /-- Coq `heapG_irisG`. A `def`, not an instance, so that iris-lean's generic
@@ -144,7 +144,7 @@ macro_rules
   | `($n ↦[wm][ $i ] $v) =>
     `(pointsTo (G := WasmG.memHs) (($n : Nat), ($i : Nat)) (DFrac.own 1) ($v : Byte))
   | `($n ↦[wmlength] $v) =>
-    `(pointsTo (G := WasmG.memsizeHs) ($n : Nat) (DFrac.own 1) ($v : Nat))
+    `(pointsTo (G := WasmG.memsizeHs) ($n : Nat) (DFrac.own 1) (memLengthToken ($v : AddrType × Nat)))
   | `($n ↪[wmlimit] $v) =>
     `(pointsTo (G := WasmG.memlimitHs) ($n : Nat) DFrac.discard ($v : Option Nat))
   | `($n ↦[wg]{ $q } $v) => `(pointsTo (G := WasmG.globHs) ($n : Nat) $q ($v : Global))
@@ -159,10 +159,11 @@ variable [WasmG hlc GF]
 
 /-! ### Memory blocks and whole tables -/
 
-@[rocq_alias iriswasm.mem_block]
+#rocq_ignore iriswasm.mem_block "Core memory blocks own a well-sized extent at a specific width"
 def memBlock (n : Nat) (m : Memory) : IProp GF := iprop(
-  ([∗list] i ↦ b ∈ m.data.data, n ↦[wm][ i ] b) ∗
-    n ↦[wmlength] lengthMem m ∗ n ↪[wmlimit] m.maxOpt)
+  ⌜MemAgree m⌝ ∗
+    ([∗list] i ↦ b ∈ m.data.data, n ↦[wm][ i ] b) ∗
+    n ↦[wmlength] (m.type.address, lengthMem m) ∗ n ↪[wmlimit] m.type.limits.max)
 
 @[rocq_alias iriswasm.mem_block_at_pos]
 def memBlockAtPos (n : Nat) (l : Bytes) (k : Nat) : IProp GF := iprop(
@@ -182,18 +183,19 @@ notation:50 n:51 " ↦[wms][ " i " ] " l:51 => memBlockAtPos n l i
 /-- `n ↦[wtblock] t`: the whole table `t` at table address `n`. -/
 notation:50 n:51 " ↦[wtblock] " t:51 => tabBlock n t
 
-@[rocq_alias iriswasm.mem_equiv]
+#rocq_ignore iriswasm.mem_equiv "Memory equivalence includes the full Core memory type"
 def MemEquiv (m1 m2 : Memory) : Prop :=
-  m1.maxOpt = m2.maxOpt ∧ m1.data.data = m2.data.data
+  m1.type = m2.type ∧ m1.data.data = m2.data.data
+
+theorem MemEquiv.eq {m₁ m₂ : Memory} (h : MemEquiv m₁ m₂) : m₁ = m₂ := by
+  cases m₁; cases m₂
+  simp only [Memory.mk.injEq]
+  exact ⟨MemoryList.ext_data h.2, h.1⟩
 
 @[rocq_alias iriswasm.mem_equiv_wmblock_rewrite]
 theorem mem_equiv_wmblock_rewrite [WasmG hlc GF] {m1 m2 : Memory} {n : Nat}
     (h : MemEquiv m1 m2) : (n ↦[wmblock] m1 : IProp GF) ⊣⊢ n ↦[wmblock] m2 := by
-  obtain ⟨⟨d1⟩, o1⟩ := m1
-  obtain ⟨⟨d2⟩, o2⟩ := m2
-  obtain ⟨h1, h2⟩ := h
-  simp only at h1 h2
-  subst h1 h2
+  cases h.eq
   exact .rfl
 
 /-! ### The Wasm weakest precondition -/
@@ -285,7 +287,7 @@ macro_rules
   | `(tactic| only_one_reduction $h using $hred) => do
     let hs := Lean.mkIdent `Hstart
     let r := Lean.mkIdent `rfl
-    `(tactic| (obtain $h:ident | ⟨_, $hs:ident⟩ | ⟨_, _, _, $hs:ident, _, _, _⟩ := reduce_det $h $hred
+    `(tactic| (obtain $h:ident | ⟨_, _, $hs:ident⟩ | ⟨_, _, _, $hs:ident, _, _, _⟩ := reduce_det $h $hred
                all_goals first
                  | (simp [firstInstr_cons, firstInstrInstr] at $hs:ident; done)
                  | (simp only [Prod.mk.injEq] at $h:ident; try obtain ⟨$r:ident, $r:ident, $r:ident⟩ := $h)
@@ -295,8 +297,9 @@ example {s s' : StoreRecord} {f f' : Frame} {es' : List AdministrativeInstructio
     {op : Binop} {t : ValueType} (hv : appBinop op v1 v2 = some v)
     (H : Reduce s f [.basic (.const v1), .basic (.const v2), .basic (.binop t op)] s' f' es') :
     s' = s ∧ f' = f ∧ es' = [.basic (.const v)] := by
-  only_one_reduction H
-  exact ⟨rfl, rfl, rfl⟩
+  rcases binop_det hv H with eq | ⟨_, _, h⟩ | ⟨_, _, _, h, _⟩
+  · simpa only [Prod.mk.injEq] using eq.symm
+  all_goals simp [firstInstr_cons, firstInstrInstr] at h
 
 -- Notation smoke test (plan, Verification 3).
 example [WasmG hlc GF] (f : Frame) : Prop :=

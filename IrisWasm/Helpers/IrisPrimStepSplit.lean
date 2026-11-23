@@ -54,8 +54,7 @@ private theorem local_inv {s : StoreRecord} {f0 : Frame} {s' : StoreRecord} {f0'
     simp only [List.cons.injEq, AdministrativeInstruction.local.injEq, and_true] at hE
     obtain ⟨rfl, rfl, rfl⟩ := hE
     exact .inl ⟨_, _, hr, rfl, rfl⟩
-  | invokeNative => have := congrArg List.getLast? hE; simp at this
-  | invokeHost => have := congrArg List.getLast? hE; simp at this
+  | block | loop | invokeNative | invokeHost => have := congrArg List.getLast? hE; simp at this
   | _ => simp at hE
 
 @[rocq_alias iriswasm.lfilled_prim_step_split_reduce_r]

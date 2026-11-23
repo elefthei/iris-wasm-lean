@@ -18,7 +18,7 @@ open Wasm
 def reduceDetGoal (ws1 : StoreRecord) (f1 : Frame) (es1 : List AdministrativeInstruction)
     (ws2 : StoreRecord) (f2 : Frame) (es2 es : List AdministrativeInstruction) : Prop :=
   (ws1, f1, es1) = (ws2, f2, es2) ∨
-  (∃ i, firstInstr es = some (.basic .growMemory, i)) ∨
+  (∃ x depth, firstInstr es = some (.basic (.growMemory x), depth)) ∨
   (∃ i1 i2 i3, firstInstr es = some (.trap, i1) ∧ firstInstr es1 = some (.trap, i2) ∧
     firstInstr es2 = some (.trap, i3) ∧ (ws1, f1) = (ws2, f2))
 
@@ -30,22 +30,6 @@ analyses). -/
 namespace IrisWasm.Helpers.ReduceDetPrelude
 open Wasm
 open AdministrativeInstruction (basic trap)
-
-def basicArity : BasicInstruction → Nat
-  | .unop .. | .testop .. | .cvtop .. | .drop | .if_ .. | .brIf _ | .brTable .. | .callIndirect _
-  | .setLocal _ | .teeLocal _ | .setGlobal _ | .load .. | .growMemory => 1
-  | .binop .. | .relop .. | .store .. => 2
-  | .select => 3
-  | .block (.tf t1s _) _ | .loop (.tf t1s _) _ => t1s.length
-  | _ => 0
-
-def arity (s : StoreRecord) : AdministrativeInstruction → Nat
-  | .basic b => basicArity b
-  | .invoke a =>
-    match s.funcs[a]? with
-    | some cl => match clType cl with | .tf t1s _ => t1s.length
-    | none => 0
-  | _ => 0
 
 theorem lfilled0 {lh : Lholed} {es LI : List AdministrativeInstruction} :
     lfilled 0 lh es LI = true →
@@ -94,72 +78,6 @@ theorem base_split {L vs rest : List AdministrativeInstruction} {e : Administrat
   obtain ⟨h1, h2, h3⟩ := first_values _ _ _ _ _ _ (hl x hx) he hc hvs heq
   exact ⟨h1.symm, h2 ▸ hx, h3.symm⟩
 
-theorem eq_nil_app_nil {α : Type} (l : List α) : l = [] ++ l ++ [] := by simp
-
-theorem decomp_aux {s f es s' f'} {es' : List AdministrativeInstruction}
-    (h : Reduce s f es s' f' es') :
-    ∀ vs e rest, es = vs ++ e :: rest → constList vs = true → isConst e = false → e ≠ trap →
-      ∃ vs0 cs m, vs = vs0 ++ cs ∧ cs.length = arity s e ∧ es' = vs0 ++ m ++ rest ∧
-        (Reduce s f es s' f' es' → Reduce s f (cs ++ [e]) s' f' m) := by
-  induction h with
-  | label es1 es1' k lh hsub h1 h2 ih =>
-    intro vs e rest heq hvs he het
-    cases k with
-    | zero =>
-      obtain ⟨bef, aft, rfl, hbef, rfl⟩ := lfilled0 h1
-      obtain ⟨bef', aft', hh, -, rfl⟩ := lfilled0 h2
-      cases hh
-      have hc : constList es1 = false := by
-        cases hc : constList es1 with
-        | false => rfl
-        | true => exact (values_no_reduce hsub hc).elim
-      obtain ⟨u, x, w, rfl, hu, hx⟩ := exists_first_nonconst hc
-      obtain ⟨rfl, rfl, rfl⟩ := first_values (bef ++ u) x (w ++ aft) vs e rest hx he
-        (const_list_concat hbef hu) hvs (by simpa using heq)
-      obtain ⟨vs0, cs, m, rfl, hlen, rfl, hr⟩ := ih u _ w rfl hu he het
-      exact ⟨bef ++ vs0, cs, m, by simp, hlen, by simp, fun _ => hr hsub⟩
-    | succ k =>
-      obtain ⟨bef, n, es0, lh', aft, LI0, rfl, hbef, hf, rfl⟩ := lfilledS h1
-      obtain ⟨bef', n', es0', lh'', aft', LI1, hh, -, hf', rfl⟩ := lfilledS h2
-      cases hh
-      obtain ⟨rfl, rfl, rfl⟩ := first_values bef _ aft vs e rest (by simp [isConst]) he hbef hvs heq
-      exact ⟨bef, [], [.label n es0 LI1], by simp, by simp [arity], by simp,
-        fun _ => .label es1 es1' (k + 1) (.rec_ [] n es0 lh' []) hsub (lfilled_label n es0 hf)
-          (lfilled_label n es0 hf')⟩
-  | simple hs =>
-    intro vs e rest heq hvs he het
-    cases hs
-    case trap lh hne hlf =>
-      obtain ⟨bef, aft, rfl, hbef, rfl⟩ := lfilled0 hlf
-      obtain ⟨-, rfl, -⟩ := first_values bef _ aft vs e rest rfl he hbef hvs (by simpa using heq)
-      exact (het rfl).elim
-    all_goals
-      obtain ⟨rfl, hlast, rfl⟩ := base_split heq
-        (by first | rfl | (simp only [List.dropLast_concat]; assumption) |
-          (simp [constList]; assumption))
-        (by simp [isConst]) hvs he
-      simp at hlast; subst hlast; clear heq
-      refine ⟨[], _, _, rfl, ?_, eq_nil_app_nil _, fun h => by simpa using h⟩
-      simp_all [arity, basicArity]
-  | _ =>
-    intro vs e rest heq hvs he het
-    obtain ⟨rfl, hlast, rfl⟩ := base_split heq
-      (by first | rfl | (simp only [List.dropLast_concat]; assumption) |
-        (simp only [List.dropLast_concat]; subst_vars; exact v_to_e_is_const_list _))
-      (by simp [isConst]) hvs he
-    simp at hlast; subst hlast; clear heq
-    refine ⟨[], _, _, rfl, ?_, eq_nil_app_nil _, fun h => by simpa using h⟩
-    simp_all [arity, basicArity, clType, vToEList]
-
-
-theorem reduce_decomp {s f es s' f'} {es' vs rest : List AdministrativeInstruction}
-    {e : AdministrativeInstruction} (h : Reduce s f es s' f' es') (heq : es = vs ++ e :: rest)
-    (hvs : constList vs = true) (he : isConst e = false) (het : e ≠ trap) :
-    ∃ vs0 cs m, vs = vs0 ++ cs ∧ cs.length = arity s e ∧ es' = vs0 ++ m ++ rest ∧
-      Reduce s f (cs ++ [e]) s' f' m := by
-  obtain ⟨vs0, cs, m, h1, h2, h3, h4⟩ := decomp_aux h vs e rest heq hvs he het
-  exact ⟨vs0, cs, m, h1, h2, h3, h4 h⟩
-
 theorem const_nonempty {es : List AdministrativeInstruction} {s f s' f' es'}
     (h : Reduce s f es s' f' es') :
     ∃ u x w, es = u ++ x :: w ∧ constList u = true ∧ isConst x = false := by
@@ -201,7 +119,7 @@ theorem trap_first_aux {s f es s' f'} {es' : List AdministrativeInstruction}
   | _ =>
     intro vs rest heq hvs
     obtain ⟨-, hlast, -⟩ := base_split heq
-      (by first | rfl |
+      (by first | rfl | (simp only [List.dropLast_concat]; assumption) |
         (simp only [List.dropLast_concat]; subst_vars; exact v_to_e_is_const_list _))
       (by simp [isConst]) hvs rfl
     simp at hlast
@@ -293,9 +211,9 @@ theorem goal_lift {s1 f1 s2 f2} {vs0 rest m1 m2 M : List AdministrativeInstructi
     (hc : constList vs0 = true) (h : reduceDetGoal s1 f1 m1 s2 f2 m2 M) :
     reduceDetGoal s1 f1 (vs0 ++ m1 ++ rest) s2 f2 (vs0 ++ m2 ++ rest) (vs0 ++ M ++ rest) := by
   simp only [List.append_assoc]
-  rcases h with h | ⟨i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
+  rcases h with h | ⟨x, i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
   · simp at h; obtain ⟨rfl, rfl, rfl⟩ := h; exact .inl rfl
-  · exact .inr (.inl ⟨i, by rw [first_instr_const _ _ hc, first_instr_app _ _ _ hi]⟩)
+  · exact .inr (.inl ⟨x, i, by rw [first_instr_const _ _ hc, first_instr_app _ _ _ hi]⟩)
   · exact .inr (.inr ⟨i1, i2, i3, by rw [first_instr_const _ _ hc, first_instr_app _ _ _ h1],
       by rw [first_instr_const _ _ hc, first_instr_app _ _ _ h2],
       by rw [first_instr_const _ _ hc, first_instr_app _ _ _ h3], h4⟩)
@@ -307,36 +225,33 @@ theorem firstInstr_label {n : Nat} {es0 LI : List AdministrativeInstruction} {e 
 theorem goal_label {s1 f1 s2 f2} {n : Nat} {es0 l1 l2 LI : List AdministrativeInstruction}
     (h : reduceDetGoal s1 f1 l1 s2 f2 l2 LI) :
     reduceDetGoal s1 f1 [.label n es0 l1] s2 f2 [.label n es0 l2] [.label n es0 LI] := by
-  rcases h with h | ⟨i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
+  rcases h with h | ⟨x, i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
   · simp at h; obtain ⟨rfl, rfl, rfl⟩ := h; exact .inl rfl
-  · exact .inr (.inl ⟨i + 1, firstInstr_label hi⟩)
+  · exact .inr (.inl ⟨x, i + 1, firstInstr_label hi⟩)
   · exact .inr (.inr ⟨_, _, _, firstInstr_label h1, firstInstr_label h2, firstInstr_label h3, h4⟩)
 
 theorem goal_local {s1 f1 s2 f2} {n : Nat} {f f0 : Frame}
     {l1 l2 LI : List AdministrativeInstruction}
     (h : reduceDetGoal s1 f1 l1 s2 f2 l2 LI) :
     reduceDetGoal s1 f0 [.local n f1 l1] s2 f0 [.local n f2 l2] [.local n f LI] := by
-  rcases h with h | ⟨i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
+  rcases h with h | ⟨x, i, hi⟩ | ⟨i1, i2, i3, h1, h2, h3, h4⟩
   · simp at h; obtain ⟨rfl, rfl, rfl⟩ := h; exact .inl rfl
-  · exact .inr (.inl ⟨i + 1, first_instr_local _ _ _ _ _ hi⟩)
+  · exact .inr (.inl ⟨x, i + 1, first_instr_local _ _ _ _ _ hi⟩)
   · simp at h4
     exact .inr (.inr ⟨_, _, _, first_instr_local _ _ _ _ _ h1, first_instr_local _ _ _ _ _ h2,
       first_instr_local _ _ _ _ _ h3, by simp [h4]⟩)
 
 theorem stuck_no_reduce {s f s' f'} {cs m : List AdministrativeInstruction}
     {e : AdministrativeInstruction} (h : Reduce s f (cs ++ [e]) s' f' m)
-    (hcs : constList cs = true) (hlen : cs.length < arity s e) : False := by
+    (hcs : constList cs = true) (hlen : cs.length < redexArity s f e) : False := by
   cases he : isConst e
-  · by_cases het : e = trap
-    · subst het; simp [arity] at hlen
-    obtain ⟨vs0, cs', m', rfl, hl, -, -⟩ := reduce_decomp h rfl hcs he het
-    simp at hlen; omega
+  · exact (Nat.not_lt_of_ge (redexArity_le h hcs he)) hlen
   · exact values_no_reduce h (const_list_concat hcs (by simp [constList, he]))
 
 theorem flat_label_case {s f s' f'} {L es1 es1' les' : List AdministrativeInstruction} {k lh}
     {e : AdministrativeInstruction} (hlast : L.getLast? = some e) (hsub : Reduce s f es1 s' f' es1')
     (hc : constList L.dropLast = true)
-    (hlen : L.dropLast.length ≤ arity s e) (hlab : ∀ n es LI, e ≠ .label n es LI)
+    (hlen : L.dropLast.length ≤ redexArity s f e) (hlab : ∀ n es LI, e ≠ .label n es LI)
     (h1 : lfilled k lh es1 L = true) (h2 : lfilled k lh es1' les' = true) :
     es1 = L ∧ les' = es1' := by
   obtain ⟨cs, rfl⟩ := List.getLast?_eq_some_iff.1 hlast
@@ -399,7 +314,7 @@ theorem flat_label_close {G : Prop} {s f s' f' S F S' F'} {k : Nat} {lh : Lholed
     (heq : (s, f, les, s', f', les') = (S, F, L, S', F', ES'))
     (ih : (s, f, es1, s', f', es1') = (S, F, L, S', F', ES') → G)
     (hne : L ≠ []) (hc : constList L.dropLast = true)
-    (hlen : L.dropLast.length ≤ arity s (L.getLast hne))
+    (hlen : L.dropLast.length ≤ redexArity S F (L.getLast hne))
     (hlab : ∀ n es LI, L.getLast hne ≠ .label n es LI) : G := by
   simp only [Prod.mk.injEq] at heq
   obtain ⟨rfl, rfl, rfl, rfl, rfl, rfl⟩ := heq
@@ -411,10 +326,10 @@ theorem flat_label_close {G : Prop} {s f s' f' S F S' F'} {k : Nat} {lh : Lholed
 scoped syntax "rdp_side" : tactic
 macro_rules
   | `(tactic| rdp_side) => `(tactic| first
-      | rfl | (simp; done) | (simp [arity, basicArity]; done)
-      | (simp_all [arity, basicArity, clType, vToEList, constList, isConst]; done)
-      | (simp_all [arity, basicArity, clType, vToEList, constList, isConst]; omega)
-      | (subst_vars; simp_all [arity, basicArity, clType, vToEList, v_to_e_is_const_list]; done))
+      | rfl | (simp; done) | (simp [redexArity]; done)
+      | (simp_all [redexArity, clType, vToEList, constList, isConst]; done)
+      | (simp_all [redexArity, clType, vToEList, constList, isConst]; omega)
+      | (subst_vars; simp_all [redexArity, clType, vToEList, v_to_e_is_const_list]; done))
 
 /-- One case of `only_one_reduction`, with
 `heq : (s0, f0, lhs, s0', f0', rhs) = (s, f, L, s', f', es')`

@@ -6,6 +6,8 @@ Authors: Iris-Wasm Lean port contributors
 import Wasm.Numerics
 import Wasm.Bytes
 import Wasm.MemoryList
+import Wasm.RunTable
+import Wasm.CoreTypes
 
 /-! Port of `theories/datatypes.v`: Wasm syntax and runtime structures. -/
 
@@ -47,14 +49,33 @@ structure Limits where
 #rocq_ignore iriswasm.Byte_array "array.v is not ported; data_vec is unused"
 #rocq_ignore iriswasm.data_vec "unused outside the unported interpreter"
 
-@[rocq_alias iriswasm.memory]
-structure Memory where
-  data : MemoryList
-  maxOpt : Option Nat
+structure MemArg where
+  memory : Nat
+  align : AlignmentExponent
+  offset : StaticOffset
   deriving DecidableEq, Repr, Inhabited
 
-@[rocq_alias iriswasm.memory_type]
-abbrev MemoryType := Limits
+inductive AddrType where
+  | i32 | i64
+  deriving DecidableEq, Repr, Inhabited
+
+def AddrType.width : AddrType → Nat
+  | .i32 => 32 | .i64 => 64
+
+def AddrType.pageLimit (aw : AddrType) := 2 ^ (aw.width - 16)
+
+theorem AddrType.pageLimit_lt_capacity (aw : AddrType) : aw.pageLimit < 2 ^ aw.width := by
+  cases aw <;> decide
+
+structure MemoryType where
+  address : AddrType
+  limits : Limits
+  deriving DecidableEq, Repr, Inhabited
+
+structure Memory where
+  data : MemoryList
+  type : MemoryType
+  deriving DecidableEq, Repr, Inhabited
 
 @[rocq_alias iriswasm.value_type]
 inductive ValueType where
@@ -62,7 +83,11 @@ inductive ValueType where
   | i64
   | f32
   | f64
+  | v128
   deriving DecidableEq, Repr, Inhabited
+
+abbrev AddrType.valueType : AddrType → ValueType
+  | .i32 => .i32 | .i64 => .i64
 
 @[rocq_alias iriswasm.packed_type]
 inductive PackedType where
@@ -90,6 +115,13 @@ abbrev ResultType := List ValueType
 inductive FunctionType where
   | tf : ResultType → ResultType → FunctionType
   deriving DecidableEq, Repr, Inhabited
+
+abbrev BlockType := CoreTypes.BlockType ValueType
+
+/-- Interpret the immediate in the active module. Only an indexed block can have parameters. -/
+def expandBlockType (types : List FunctionType) : BlockType → Option FunctionType
+  | .result v => some (.tf [] v.toList)
+  | .index i => types[i]?
 
 @[rocq_alias iriswasm.elem_type]
 inductive ElemType where
@@ -121,7 +153,47 @@ inductive Value where
   | int64 : I64 → Value
   | float32 : F32 → Value
   | float64 : F64 → Value
+  | vec128 : BitVec 128 → Value
   deriving DecidableEq, Repr, Inhabited
+
+abbrev AddrType.natValue (aw : AddrType) (n : Nat) : Value :=
+  match aw with
+  | .i32 => .int32 (Int.intOfZ n) | .i64 => .int64 (Int.intOfZ n)
+
+/-- The two integer operand forms matched by Core memory rules. Store addresses remain `Nat`. -/
+inductive AddressOperand where
+  | i32 (bits : I32)
+  | i64 (bits : I64)
+  deriving DecidableEq, Repr
+
+namespace AddressOperand
+
+abbrev value : AddressOperand → Value
+  | .i32 x => .int32 x | .i64 x => .int64 x
+
+def ofValue? : Value → Option AddressOperand
+  | .int32 x => some (.i32 x) | .int64 x => some (.i64 x) | _ => none
+
+abbrev unsigned : AddressOperand → Nat
+  | .i32 x => x.toNat | .i64 x => x.toNat
+
+abbrev address : AddressOperand → AddrType
+  | .i32 _ => .i32 | .i64 _ => .i64
+
+abbrev result (a : AddressOperand) (pages : Nat) : Value := a.address.natValue pages
+
+abbrev failure : AddressOperand → Value
+  | .i32 _ => .int32 Int.mone | .i64 _ => .int64 Int.mone
+
+@[simp] theorem value_inj {a b : AddressOperand} : a.value = b.value ↔ a = b := by
+  cases a <;> cases b <;> simp [value]
+
+@[simp] theorem ofValue?_value (a : AddressOperand) : ofValue? a.value = some a := by cases a <;> rfl
+
+theorem ofValue?_eq_some {v : Value} {a : AddressOperand} : ofValue? v = some a ↔ v = a.value := by
+  cases v <;> cases a <;> simp [ofValue?, value]
+
+end AddressOperand
 
 @[rocq_alias iriswasm.result]
 inductive Result where
@@ -159,6 +231,8 @@ inductive UnopF where
 inductive Unop where
   | i : UnopI → Unop
   | f : UnopF → Unop
+  | extendS : PackedType → Unop
+  | vnot
   deriving DecidableEq, Repr, Inhabited
 
 @[rocq_alias iriswasm.binop_i]
@@ -188,15 +262,20 @@ inductive BinopF where
   | copysign
   deriving DecidableEq, Repr, Inhabited
 
+inductive VecBinop where
+  | and | andNot | or | xor
+  deriving DecidableEq, Repr, Inhabited
+
 @[rocq_alias iriswasm.binop]
 inductive Binop where
   | i : BinopI → Binop
   | f : BinopF → Binop
+  | v : VecBinop → Binop
   deriving DecidableEq, Repr, Inhabited
 
-@[rocq_alias iriswasm.testop]
 inductive Testop where
   | eqz
+  | anyTrue
   deriving DecidableEq, Repr, Inhabited
 
 @[rocq_alias iriswasm.relop_i]
@@ -229,6 +308,7 @@ inductive Relop where
 inductive Cvtop where
   | convert
   | reinterpret
+  | truncSat
   deriving DecidableEq, Repr, Inhabited
 
 @[rocq_alias iriswasm.basic_instruction]
@@ -237,9 +317,10 @@ inductive BasicInstruction where
   | nop
   | drop
   | select
-  | block : FunctionType → List BasicInstruction → BasicInstruction
-  | loop : FunctionType → List BasicInstruction → BasicInstruction
-  | if_ : FunctionType → List BasicInstruction → List BasicInstruction → BasicInstruction
+  | vbitselect
+  | block : BlockType → List BasicInstruction → BasicInstruction
+  | loop : BlockType → List BasicInstruction → BasicInstruction
+  | if_ : BlockType → List BasicInstruction → List BasicInstruction → BasicInstruction
   | br : Immediate → BasicInstruction
   | brIf : Immediate → BasicInstruction
   | brTable : List Immediate → Immediate → BasicInstruction
@@ -251,11 +332,10 @@ inductive BasicInstruction where
   | teeLocal : Immediate → BasicInstruction
   | getGlobal : Immediate → BasicInstruction
   | setGlobal : Immediate → BasicInstruction
-  | load : ValueType → Option (PackedType × Sx) → AlignmentExponent → StaticOffset →
-      BasicInstruction
-  | store : ValueType → Option PackedType → AlignmentExponent → StaticOffset → BasicInstruction
-  | currentMemory
-  | growMemory
+  | load : ValueType → Option (PackedType × Sx) → MemArg → BasicInstruction
+  | store : ValueType → Option PackedType → MemArg → BasicInstruction
+  | currentMemory : Immediate → BasicInstruction
+  | growMemory : Immediate → BasicInstruction
   | const : Value → BasicInstruction
   | unop : ValueType → Unop → BasicInstruction
   | binop : ValueType → Binop → BasicInstruction
@@ -271,6 +351,7 @@ def BasicInstruction.beq : BasicInstruction → BasicInstruction → Bool
   | .nop, .nop => true
   | .drop, .drop => true
   | .select, .select => true
+  | .vbitselect, .vbitselect => true
   | .block t1 es1, .block t2 es2 => decide (t1 = t2) && BasicInstruction.beqList es1 es2
   | .loop t1 es1, .loop t2 es2 => decide (t1 = t2) && BasicInstruction.beqList es1 es2
   | .if_ t1 a1 b1, .if_ t2 a2 b2 =>
@@ -286,12 +367,11 @@ def BasicInstruction.beq : BasicInstruction → BasicInstruction → Bool
   | .teeLocal i, .teeLocal j => decide (i = j)
   | .getGlobal i, .getGlobal j => decide (i = j)
   | .setGlobal i, .setGlobal j => decide (i = j)
-  | .load t1 p1 a1 o1, .load t2 p2 a2 o2 =>
-    decide (t1 = t2) && decide (p1 = p2) && decide (a1 = a2) && decide (o1 = o2)
-  | .store t1 p1 a1 o1, .store t2 p2 a2 o2 =>
-    decide (t1 = t2) && decide (p1 = p2) && decide (a1 = a2) && decide (o1 = o2)
-  | .currentMemory, .currentMemory => true
-  | .growMemory, .growMemory => true
+  | .load t1 p1 m1, .load t2 p2 m2 =>
+    decide (t1 = t2) && decide (p1 = p2) && decide (m1 = m2)
+  | .store t1 p1 m1, .store t2 p2 m2 =>
+    decide (t1 = t2) && decide (p1 = p2) && decide (m1 = m2)
+  | .currentMemory x, .currentMemory y | .growMemory x, .growMemory y => decide (x = y)
   | .const v1, .const v2 => decide (v1 = v2)
   | .unop t1 o1, .unop t2 o2 => decide (t1 = t2) && decide (o1 = o2)
   | .binop t1 o1, .binop t2 o2 => decide (t1 = t2) && decide (o1 = o2)
@@ -309,9 +389,8 @@ end
 
 theorem BasicInstruction.beq_iff (a b : BasicInstruction) : a.beq b = true ↔ a = b := by
   revert b
-  refine BasicInstruction.rec (motive_1 := fun a => ∀ b, a.beq b = true ↔ a = b)
+  apply BasicInstruction.rec (motive_1 := fun a => ∀ b, a.beq b = true ↔ a = b)
     (motive_2 := fun l => ∀ l', BasicInstruction.beqList l l' = true ↔ l = l')
-    ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ ?_ a
   all_goals
     intros
     rename_i b
@@ -359,9 +438,18 @@ abbrev Funcelem := Option Nat
 
 @[rocq_alias iriswasm.tableinst]
 structure Tableinst where
-  data : List Funcelem
+  entries : RunTable Funcelem
   maxOpt : Option Nat
   deriving DecidableEq, Repr, Inhabited
+
+/-- Extensional contents used by store typing and the Iris heap interpretation. -/
+def Tableinst.data (t : Tableinst) : List Funcelem := t.entries.toList
+
+@[simp] theorem Tableinst.length_data (t : Tableinst) : t.data.length = t.entries.size :=
+  RunTable.length_toList _
+
+@[simp] theorem Tableinst.data_getElem? (t : Tableinst) (i : Nat) :
+    t.data[i]? = t.entries.get? i := RunTable.toList_getElem? ..
 
 @[rocq_alias iriswasm.global]
 structure Global where

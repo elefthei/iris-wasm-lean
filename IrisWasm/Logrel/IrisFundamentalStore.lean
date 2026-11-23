@@ -97,6 +97,7 @@ theorem mem_extract_insert (ms : Memory) (start len m : Nat) :
           [∗list] i ↦ b ∈ updateListRange ms.data.data bv' start, m ↦[wm][ i ] b) ∗
         ⌜bv.length = len⌝ : IProp GF) := by
   intro hlen hb
+  rw [lengthMem_eq_data_length] at hb
   iintro Hm
   ihave Hm := BI.BigSepL.bigSepL_mono
     (Ψ := fun i b => iprop(⌜True⌝ → m ↦[wm][ i ] b)) (fun _ => by iintro H _; iexact H) $$ Hm
@@ -112,13 +113,14 @@ theorem mem_extract_insert (ms : Memory) (start len m : Nat) :
     iintro H; iapply H; ipureintro; trivial
   · ipureintro; exact Hl
 
-@[rocq_alias iriswasm.typing_store]
-theorem typing_store (C : TContext) (a : AlignmentExponent) (tp : Option PackedType) (t : ValueType)
-    (off : StaticOffset) :
-    C.memory ≠ [] →
-    loadStoreTBounds a tp t = true →
-    ⊢ (semanticTyping C (toEList [.store t tp a off]) (.tf [.i32, t] []) : IProp GF) := by
-  intro hmem hbounds
+theorem typing_store (C : TContext) (ma : MemArg) (tp : Option PackedType) (t : ValueType)
+    {mt : MemoryType} :
+    C.memory[ma.memory]? = some mt →
+    loadStoreTBounds ma.align tp t = true →
+    ma.offset < 2^mt.address.width →
+    ⊢ (semanticTyping C (toEList [.store t tp ma]) (.tf [mt.address.valueType, t] []) : IProp GF) := by
+  rcases ma with ⟨x, a, off⟩
+  intro hmem hbounds _
   let := @WasmG.invGS hlc GF _
   apply semantic_typing_immV
   intro j lh hl f ws
@@ -126,11 +128,10 @@ theorem typing_store (C : TContext) (a : AlignmentExponent) (tp : Option PackedT
   ihave %Hlen := BI.BigSepL2.bigSepL2_length $$ Hv
   rcases ws with _ | ⟨w, _ | ⟨v, _ | ⟨_, _⟩⟩⟩ <;> simp at Hlen
   icases Hv with ⟨Hw, Hv, -⟩
-  ihave %Hz : ⌜∃ z, w = Value.int32 z⌝ $$ [Hw]
-  · simp only [interpValue, interpValueI32]; iexact Hw
-  obtain ⟨z, rfl⟩ := Hz
+  ihave %hw := interp_address_operand mt.address w $$ Hw
+  obtain ⟨c, rfl, -⟩ := hw
   ihave %Ht := interp_value_types_agree t v $$ Hv
-  icases interp_instance_get_mem C hl j hmem $$ Hi with ⟨%τm, %mem, %Hl1, %Hl2, -, #Hm⟩
+  icases interp_instance_get_mem C hl j x hmem $$ Hi with ⟨%mem, %hlk, -, #Hm⟩
   unfold interpFrame
   icases Hfv with ⟨%locs, %Heq, #Hlocs, Hown⟩
   subst Heq
@@ -140,23 +141,23 @@ theorem typing_store (C : TContext) (a : AlignmentExponent) (tp : Option PackedT
   iapply IrisWp.fupd_wp (ι := wasmIrisGS) (fun f => iprop(↪[frame] f))
   imod NonAtomicInvariant.inv_acc CoPset.subseteq_top CoPset.subseteq_top $$ Hm Hown with
     ⟨Hms, Hown, Hcls⟩
-  icases Hms with ⟨%ms, >Hmem, >Hsize⟩
+  icases Hms with ⟨%ms, >Hwell, >Hmem, >Hsize⟩
   imodintro
   iapply IrisWp.wp_fupd (ι := wasmIrisGS) (fun f => iprop(↪[frame] f))
   -- the number of bytes written
   let nb := match tp with | some tp => lengthTp tp | none => lengthT t
-  by_cases hfail : lengthMem ms < Wasm.Int.nOfUint z + off + nb
+  by_cases hfail : lengthMem ms < c.unsigned + off + nb
   · iapply IrisWp.wp_wand (ι := wasmIrisGS) (fun f => iprop(↪[frame] f)) $$
-      [Hf Hsize] [Hcls Hown Hmem]
+      [Hf Hsize] [Hcls Hown Hwell Hmem]
     · rcases tp with _ | tp
-      · iapply wp_store_failure (fun v => iprop(⌜v = .trapV⌝)) _ _ t v off a z mem ⟨locs, j⟩
-          (lengthMem ms) Ht Hl2 hfail
+      · iapply wp_store_failure (x := x) (aw := mt.address) (fun v => iprop(⌜v = .trapV⌝))
+          _ _ t v off a c mem ⟨locs, j⟩ (lengthMem ms) Ht hlk hfail
         iframe; inext; ipureintro; rfl
-      · iapply wp_store_packed_failure (fun v => iprop(⌜v = .trapV⌝)) _ _ t v off a z mem
-          ⟨locs, j⟩ (lengthMem ms) tp Ht Hl2 hfail
+      · iapply wp_store_packed_failure (x := x) (aw := mt.address) (fun v => iprop(⌜v = .trapV⌝))
+          _ _ t v off a c mem ⟨locs, j⟩ (lengthMem ms) tp Ht hlk (packedTypeOK_of_bounds hbounds) hfail
         iframe; inext; ipureintro; rfl
     · iintro %v' ⟨⟨%rfl, Hsize⟩, Hf⟩
-      imod Hcls $$ [Hsize Hmem Hown] with Hown
+      imod Hcls $$ [Hsize Hwell Hmem Hown] with Hown
       · iframe
       imodintro
       isplitr
@@ -169,7 +170,7 @@ theorem typing_store (C : TContext) (a : AlignmentExponent) (tp : Option PackedT
       rcases tp with _ | tp
       · cases t <;> simp [nb, lengthT]
       · cases tp <;> simp [nb, lengthTp]
-    icases mem_extract_insert ms (Wasm.Int.nOfUint z + off) nb mem hnb (by omega) $$ Hmem with
+    icases mem_extract_insert ms (c.unsigned + off) nb mem hnb (by omega) $$ Hmem with
       ⟨%bv, Ha, Hmem, %Hlenbv⟩
     -- the bytes written
     let bs := match tp with | some tp => bytesTakefill 0 (lengthTp tp) (bits v) | none => bits v
@@ -178,29 +179,25 @@ theorem typing_store (C : TContext) (a : AlignmentExponent) (tp : Option PackedT
       · simp [bs, nb] at Hlenbv ⊢; rw [length_bits v t Ht, Hlenbv]
       · simp [bs, nb] at Hlenbv ⊢; rw [length_bytes_takefill, Hlenbv]
     iapply IrisWp.wp_wand (ι := wasmIrisGS) (fun f => iprop(↪[frame] f))
-      (Φ := fun w => iprop((⌜w = .immV []⌝ ∗ mem ↦[wms][ Wasm.Int.nOfUint z + off ] bs) ∗
-        ↪[frame] ⟨locs, j⟩)) $$ [Hf Ha] [Hcls Hown Hmem Hsize]
+      (Φ := fun w => iprop((⌜w = .immV []⌝ ∗ mem ↦[wms][ c.unsigned + off ] bs) ∗
+        ↪[frame] ⟨locs, j⟩)) $$ [Hf Ha] [Hcls Hown Hwell Hmem Hsize]
     · rcases tp with _ | tp
-      · iapply wp_store (fun v => iprop(⌜v = .immV []⌝)) _ _ t v bv off a z mem ⟨locs, j⟩ Ht
-          Hlenbv Hl2
+      · iapply wp_store (x := x) (fun v => iprop(⌜v = .immV []⌝)) _ _ t v bv off a c
+          mem ⟨locs, j⟩ Ht Hlenbv hlk
         iframe; inext; ipureintro; rfl
-      · have htp : lengthTp tp < lengthT t := by
-          simp [loadStoreTBounds] at hbounds; exact hbounds.1.2
-        iapply wp_store_packed (fun v => iprop(⌜v = .immV []⌝)) _ _ t v bv off a z mem ⟨locs, j⟩
-          tp Ht Hlenbv htp Hl2
+      · iapply wp_store_packed (x := x) (fun v => iprop(⌜v = .immV []⌝)) _ _ t v bv off a
+          c mem ⟨locs, j⟩ tp Ht Hlenbv (packedTypeOK_of_bounds hbounds) hlk
         iframe; inext; ipureintro; rfl
     · iintro %v' ⟨⟨%rfl, Ha⟩, Hf⟩
       ihave Hmem := Hmem $$ %bs %hbs Ha
-      imod Hcls $$ [Hsize Hmem Hown] with Hown
+      imod Hcls $$ [Hsize Hwell Hmem Hown] with Hown
       · isplitr [Hown]
         · inext
-          iexists (⟨⟨updateListRange ms.data.data bs (Wasm.Int.nOfUint z + off)⟩, ms.maxOpt⟩ :
-            Memory)
-          have : lengthMem ms =
-              (updateListRange ms.data.data bs (Wasm.Int.nOfUint z + off)).length :=
-            update_list_range_length _ _ _ (by
-              simp [lengthMem, MemoryList.lengthMem] at hfail ⊢; omega)
-          simp only [lengthMem, MemoryList.lengthMem] at this ⊢
+          iexists {ms with data := MemoryList.ofBytes (updateListRange ms.data.data bs (c.unsigned + off))}
+          have : lengthMem ms = (updateListRange ms.data.data bs (c.unsigned + off)).length :=
+            (lengthMem_eq_data_length _).trans (update_list_range_length _ _ _ (by
+              rw [lengthMem_eq_data_length] at hfail; omega))
+          simp only [lengthMem_eq_data_length, MemoryList.data_ofBytes] at this ⊢
           rw [← this]
           iframe
         · iexact Hown

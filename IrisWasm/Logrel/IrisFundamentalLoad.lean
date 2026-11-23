@@ -70,6 +70,7 @@ theorem mem_extract (ms : Memory) (start len m : Nat) :
         (m ↦[wms][ start ] bv -∗ [∗list] i ↦ b ∈ ms.data.data, m ↦[wm][ i ] b) ∗
         ⌜bv.length = len⌝ : IProp GF) := by
   intro hlen hb
+  rw [lengthMem_eq_data_length] at hb
   iintro Hm
   ihave Hm := BI.BigSepL.bigSepL_mono
     (Ψ := fun i b => iprop(⌜True⌝ → m ↦[wm][ i ] b)) (fun _ => by iintro H _; iexact H) $$ Hm
@@ -85,13 +86,14 @@ theorem mem_extract (ms : Memory) (start len m : Nat) :
     iintro H; iapply H; ipureintro; trivial
   · ipureintro; exact Hl
 
-@[rocq_alias iriswasm.typing_load]
-theorem typing_load (C : TContext) (a : AlignmentExponent) (tp_sx : Option (PackedType × Sx))
-    (t : ValueType) (off : StaticOffset) :
-    C.memory ≠ [] →
-    loadStoreTBounds a (optionProjl tp_sx) t = true →
-    ⊢ (semanticTyping C (toEList [.load t tp_sx a off]) (.tf [.i32] [t]) : IProp GF) := by
-  intro hmem _
+theorem typing_load (C : TContext) (ma : MemArg) (tp_sx : Option (PackedType × Sx))
+    (t : ValueType) {mt : MemoryType} :
+    C.memory[ma.memory]? = some mt →
+    loadStoreTBounds ma.align (optionProjl tp_sx) t = true →
+    ma.offset < 2^mt.address.width →
+    ⊢ (semanticTyping C (toEList [.load t tp_sx ma]) (.tf [mt.address.valueType] [t]) : IProp GF) := by
+  rcases ma with ⟨x, a, off⟩
+  intro hmem hbounds _
   let := @WasmG.invGS hlc GF _
   apply semantic_typing_immV
   intro j lh hl f ws
@@ -99,10 +101,9 @@ theorem typing_load (C : TContext) (a : AlignmentExponent) (tp_sx : Option (Pack
   ihave %Hlen := BI.BigSepL2.bigSepL2_length $$ Hv
   rcases ws with _ | ⟨w, _ | ⟨_, _⟩⟩ <;> simp at Hlen
   icases Hv with ⟨Hw, -⟩
-  ihave %Hz : ⌜∃ z, w = Value.int32 z⌝ $$ [Hw]
-  · simp only [interpValue, interpValueI32]; iexact Hw
-  obtain ⟨z, rfl⟩ := Hz
-  icases interp_instance_get_mem C hl j hmem $$ Hi with ⟨%τm, %mem, %Hl1, %Hl2, -, #Hm⟩
+  ihave %hw := interp_address_operand mt.address w $$ Hw
+  obtain ⟨c, rfl, -⟩ := hw
+  icases interp_instance_get_mem C hl j x hmem $$ Hi with ⟨%mem, %hlk, -, #Hm⟩
   unfold interpFrame
   icases Hfv with ⟨%locs, %Heq, #Hlocs, Hown⟩
   subst Heq
@@ -112,23 +113,23 @@ theorem typing_load (C : TContext) (a : AlignmentExponent) (tp_sx : Option (Pack
   iapply IrisWp.fupd_wp (ι := wasmIrisGS) (fun f => iprop(↪[frame] f))
   imod NonAtomicInvariant.inv_acc CoPset.subseteq_top CoPset.subseteq_top $$ Hm Hown with
     ⟨Hms, Hown, Hcls⟩
-  icases Hms with ⟨%ms, >Hmem, >Hsize⟩
+  icases Hms with ⟨%ms, >Hwell, >Hmem, >Hsize⟩
   imodintro
   iapply IrisWp.wp_fupd (ι := wasmIrisGS) (fun f => iprop(↪[frame] f))
   -- the number of bytes read
   let nb := match tp_sx with | some (tp, _) => lengthTp tp | none => lengthT t
-  by_cases hfail : lengthMem ms < Wasm.Int.nOfUint z + off + nb
+  by_cases hfail : lengthMem ms < c.unsigned + off + nb
   · iapply IrisWp.wp_wand (ι := wasmIrisGS) (fun f => iprop(↪[frame] f)) $$
-      [Hf Hsize] [Hcls Hown Hmem]
+      [Hf Hsize] [Hcls Hown Hwell Hmem]
     · rcases tp_sx with _ | ⟨tp, sx⟩
-      · iapply wp_load_failure (fun v => iprop(⌜v = .trapV⌝)) _ _ off a z mem ⟨locs, j⟩ t
-          (lengthMem ms) Hl2 hfail
+      · iapply wp_load_failure (x := x) (aw := mt.address) (fun v => iprop(⌜v = .trapV⌝))
+          _ _ off a c mem ⟨locs, j⟩ t (lengthMem ms) hlk hfail
         iframe; inext; ipureintro; rfl
-      · iapply wp_load_packed_failure (fun v => iprop(⌜v = .trapV⌝)) _ _ off a z mem ⟨locs, j⟩ t
-          (lengthMem ms) tp sx Hl2 hfail
+      · iapply wp_load_packed_failure (x := x) (aw := mt.address) (fun v => iprop(⌜v = .trapV⌝))
+          _ _ off a c mem ⟨locs, j⟩ t (lengthMem ms) tp sx hlk (packedTypeOK_of_bounds hbounds) hfail
         iframe; inext; ipureintro; rfl
     · iintro %v ⟨⟨%rfl, Hsize⟩, Hf⟩
-      imod Hcls $$ [Hsize Hmem Hown] with Hown
+      imod Hcls $$ [Hsize Hwell Hmem Hown] with Hown
       · iframe
       imodintro
       isplitr
@@ -141,20 +142,23 @@ theorem typing_load (C : TContext) (a : AlignmentExponent) (tp_sx : Option (Pack
       rcases tp_sx with _ | ⟨tp, _⟩
       · cases t <;> simp [nb, lengthT]
       · cases tp <;> simp [nb, lengthTp]
-    icases mem_extract ms (Wasm.Int.nOfUint z + off) nb mem hnb (by omega) $$ Hmem with
+    icases mem_extract ms (c.unsigned + off) nb mem hnb (by omega) $$ Hmem with
       ⟨%bv, Ha, Hmem, %Hlenbv⟩
     iapply IrisWp.wp_wand (ι := wasmIrisGS) (fun f => iprop(↪[frame] f)) $$
-      [Hf Ha] [Hcls Hown Hmem Hsize]
+      [Hf Ha] [Hcls Hown Hwell Hmem Hsize]
     · rcases tp_sx with _ | ⟨tp, sx⟩
-      · iapply wp_load_deserialize (fun v => iprop(⌜v = .immV [wasmDeserialise bv t]⌝)) _ _ t bv
-          off a z mem ⟨locs, j⟩ Hlenbv Hl2
-        iframe; inext; ipureintro; rfl
-      · iapply wp_load_packed_deserialize (fun v => iprop(⌜v = .immV [wasmDeserialise bv t]⌝))
-          _ _ t bv off a z mem ⟨locs, j⟩ tp sx Hlenbv Hl2
-        iframe; inext; ipureintro; rfl
-    · iintro %v ⟨⟨%rfl, Ha⟩, Hf⟩
+      · iapply wp_load_deserialize (x := x)
+          (fun v => iprop(⌜∃ bs, v = .immV [wasmDeserialise bs t]⌝))
+          _ _ t bv off a c mem ⟨locs, j⟩ Hlenbv hlk
+        iframe; inext; ipureintro; exact ⟨_, rfl⟩
+      · iapply wp_load_packed_deserialize (x := x)
+          (fun v => iprop(⌜∃ bs, v = .immV [wasmDeserialise bs t]⌝))
+          _ _ t bv off a c mem ⟨locs, j⟩ tp sx Hlenbv (packedTypeOK_of_bounds hbounds) hlk
+        iframe; inext; ipureintro; exact ⟨_, rfl⟩
+    · iintro %v ⟨⟨%hv, Ha⟩, Hf⟩
+      obtain ⟨bs, rfl⟩ := hv
       ihave Hmem := Hmem $$ Ha
-      imod Hcls $$ [Hsize Hmem Hown] with Hown
+      imod Hcls $$ [Hsize Hwell Hmem Hown] with Hown
       · iframe
       imodintro
       isplitr
@@ -162,7 +166,7 @@ theorem typing_load (C : TContext) (a : AlignmentExponent) (tp_sx : Option (Pack
         · ipureintro; rfl
         · isplitl
           · cases t <;> simp only [interpValue, interpValueI32, interpValueI64, interpValueF32,
-              interpValueF64, wasmDeserialise] <;> ipureintro <;> exact ⟨_, rfl⟩
+              interpValueF64, interpValueV128, wasmDeserialise] <;> ipureintro <;> exact ⟨_, rfl⟩
           · iempintro
       · iexists ⟨locs, j⟩; iframe; unfold interpFrame; iexists locs; iframe
         isplitr

@@ -41,6 +41,16 @@ def assertConst1I32ToNat (es : Wasm.Expr) : Nat :=
   | some v => natOfInt v
   | none => 0
 
+def assertConst1Address (es : Wasm.Expr) : Option AddressOperand :=
+  (assertConst1 es).bind AddressOperand.ofValue?
+
+@[simp] theorem assertConst1Address_value (a : AddressOperand) :
+    assertConst1Address [.const a.value] = some a :=
+  AddressOperand.ofValue?_value a
+
+def literalDataOffset (es : Wasm.Expr) : Option Nat :=
+  (assertConst1Address es).map AddressOperand.unsigned
+
 @[rocq_alias iriswasm.module_elem_bound_check_gmap]
 def ModuleElemBoundCheckGmap (wts : NatMap Tableinst) (impDescs : List ModuleExportDesc)
     (m : Module) : Prop :=
@@ -52,7 +62,7 @@ def ModuleElemBoundCheckGmap (wts : NatMap Tableinst) (impDescs : List ModuleExp
         match (extTabs impDescs)[n]? with
         | some (.tableidx k) =>
           match get? wts k with
-          | some ti => natOfInt eoffi + e.init.length ≤ ti.data.length
+          | some ti => natOfInt eoffi + e.init.length ≤ ti.entries.size
           | none => False
         | none =>
           match m.tables[n - (extTabs impDescs).length]? with
@@ -60,22 +70,22 @@ def ModuleElemBoundCheckGmap (wts : NatMap Tableinst) (impDescs : List ModuleExp
           | none => False
       | none => False
 
-@[rocq_alias iriswasm.module_data_bound_check_gmap]
+#rocq_ignore iriswasm.module_data_bound_check_gmap "active data offsets can have either address type"
 def ModuleDataBoundCheckGmap (wms : NatMap Memory) (impDescs : List ModuleExportDesc)
     (m : Module) : Prop :=
   ∀ d ∈ m.data,
     match d.data with
     | .memidx n =>
-      match assertConst1I32 d.offset with
-      | some doffi =>
+      match literalDataOffset d.offset with
+      | some off =>
         match (extMems impDescs)[n]? with
         | some (.memidx k) =>
           match get? wms k with
-          | some mi => natOfInt doffi + d.init.length ≤ lengthMem mi
+          | some mi => off + d.init.length ≤ lengthMem mi
           | none => False
         | none =>
           match m.mems[n - (extMems impDescs).length]? with
-          | some modmem => natOfInt doffi + d.init.length ≤ pageSize * modmem.min
+          | some modmem => off + d.init.length ≤ pageSize * modmem.limits.min
           | none => False
       | none => False
 
@@ -675,22 +685,22 @@ theorem import_tab_wasm_lookup (v_imps : List ModuleExport) (t_imps : List Exter
 theorem import_mem_wasm_lookup (v_imps : List ModuleExport) (t_imps : List ExternT)
     (wms : NatMap Memory) (ws : StoreRecord) :
     ⊢ genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗
       importMemWasmCheck (GF := GF) v_imps t_imps wms -∗
       ⌜v_imps.length = t_imps.length ∧ ∀ (k : Nat) (v : ModuleExport) (t : ExternT),
         v_imps[k]? = some v → t_imps[k]? = some t →
         match v.desc with
         | .mem (.memidx i) => ∃ mem mt,
-            ws.mems[i]? = some { data := { data := mem.data.data }, maxOpt := mem.maxOpt } ∧
+            ws.mems[i]? = some mem ∧
             get? wms i = some mem ∧ t = .mem mt ∧ memTyping mem mt = true
         | _ => True⌝ := by
   unfold importMemWasmCheck importMemResources memTypecheck
   iintro Hw Hws Hwl ⟨Hm, %Htype, -⟩
   ihave %hv := sepM_pure_all (Q := iprop(genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) ∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) ∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt)))))
-    (ψ := fun k x => ∃ m, ws.mems[k]? = some m ∧ m.data.data = x.data.data ∧ m.maxOpt = x.maxOpt)
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) ∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max)))))
+    (ψ := fun k x => ∃ m, ws.mems[k]? = some m ∧ m.data.data = x.data.data ∧ m.type = x.type)
     (fun k x => by
       iintro ⟨Hw, Hws, Hwl⟩ Hx
       iapply mem_block_lookup $$ Hw Hws Hwl Hx) $$ [Hw Hws Hwl] Hm
@@ -700,10 +710,8 @@ theorem import_mem_wasm_lookup (v_imps : List ModuleExport) (t_imps : List Exter
   have hR := forall₂_getElem? Htype hv' ht
   rcases v with ⟨_, (⟨⟨i⟩⟩ | ⟨⟨i⟩⟩ | ⟨⟨i⟩⟩ | ⟨⟨i⟩⟩)⟩ <;> try trivial
   obtain ⟨mem, mt, h1, h2⟩ := hR
-  obtain ⟨⟨⟨d⟩, o⟩, hm, hd, ho⟩ := hv i mem h1
-  refine ⟨mem, mt, ?_, h1, h2⟩
-  simp only at hd ho
-  rw [hm, hd, ho]
+  obtain ⟨m, hm, hd, ho⟩ := hv i mem h1
+  exact ⟨mem, mt, MemEquiv.eq (m₁ := m) (m₂ := mem) ⟨ho, hd⟩ ▸ hm, h1, h2⟩
 
 @[rocq_alias iriswasm.import_glob_wasm_lookup]
 theorem import_glob_wasm_lookup (v_imps : List ModuleExport) (t_imps : List ExternT)
@@ -740,8 +748,8 @@ theorem import_resources_wasm_lookup (v_imps : List ModuleExport) (t_imps : List
       genHeapInterp (G := WasmG.globHs) (gmapOfList ws.globals) -∗
       genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (ws.tables.map tabSize)) -∗
       genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (ws.tables.map (·.maxOpt))) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗
       importResourcesWasmTypecheck (GF := GF) v_imps t_imps wfs wts wms wgs -∗
       ⌜v_imps.length = t_imps.length ∧ ∀ (k : Nat) (v : ModuleExport) (t : ExternT),
         v_imps[k]? = some v → t_imps[k]? = some t →
@@ -751,7 +759,7 @@ theorem import_resources_wasm_lookup (v_imps : List ModuleExport) (t_imps : List
         | .table (.tableidx i) => ∃ tab tt, ws.tables[i]? = some tab ∧ get? wts i = some tab ∧
             t = .tab tt ∧ tabTyping tab tt = true
         | .mem (.memidx i) => ∃ mem mt,
-            ws.mems[i]? = some { data := { data := mem.data.data }, maxOpt := mem.maxOpt } ∧
+            ws.mems[i]? = some mem ∧
             get? wms i = some mem ∧ t = .mem mt ∧ memTyping mem mt = true
         | .global (.globalidx i) => ∃ g gt, ws.globals[i]? = some g ∧ get? wgs i = some g ∧
             t = .glob gt ∧ globalAgree g gt = true⌝ := by
@@ -796,17 +804,17 @@ theorem import_resources_wts_subset (v_imps : List ModuleExport) (t_imps : List 
 theorem import_resources_wms_subset (v_imps : List ModuleExport) (t_imps : List ExternT)
     (wms : NatMap Memory) (ws : StoreRecord) :
     ⊢ genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗
       importMemWasmCheck (GF := GF) v_imps t_imps wms -∗
       ⌜v_imps.length = t_imps.length⌝ -∗
       ⌜mapRelated MemEquiv wms (gmapOfList ws.mems)⌝ := by
   unfold importMemWasmCheck importMemResources
   iintro Hw Hws Hwl ⟨Hm, -, -⟩ -
   ihave %hv := sepM_pure_all (Q := iprop(genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) ∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) ∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt)))))
-    (ψ := fun k x => ∃ m, ws.mems[k]? = some m ∧ m.data.data = x.data.data ∧ m.maxOpt = x.maxOpt)
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) ∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max)))))
+    (ψ := fun k x => ∃ m, ws.mems[k]? = some m ∧ m.data.data = x.data.data ∧ m.type = x.type)
     (fun k x => by
       iintro ⟨Hw, Hws, Hwl⟩ Hx
       iapply mem_block_lookup $$ Hw Hws Hwl Hx) $$ [Hw Hws Hwl] Hm
@@ -847,7 +855,7 @@ theorem module_data_bound_check_gmap_extend (wms1 wms2 : NatMap Memory)
   split at this
   · obtain ⟨mi', hmi', hmax, hdata⟩ := hrel _ _ ‹_›
     rw [hmi']
-    simpa [Wasm.lengthMem, MemoryList.lengthMem, hdata] using this
+    simpa only [lengthMem_eq_data_length, hdata] using this
   · exact this.elim
 
 @[rocq_alias iriswasm.module_glob_init_value]
@@ -891,13 +899,16 @@ def buildMemInitialiser (datum : ModuleData) (memid offset : Nat) : NatPairMap B
   (datum.init.mapIdx fun j b => fun (acc : NatPairMap Byte) =>
     insert acc (memid, j + offset) b).foldl (fun acc actor => actor acc) ∅
 
-@[rocq_alias iriswasm.module_mem_init_values]
+#rocq_ignore iriswasm.module_mem_init_values "literal offsets use their unsigned address type"
 def moduleMemInitValues (m : Module) : List ModuleData → NatPairMap Byte
   | [] => ∅
   | dInit :: dInits' =>
     match dInit.data with
-    | .memidx i => moduleMemInitValues m dInits' ∪
-        buildMemInitialiser dInit i (assertConst1I32ToNat dInit.offset)
+    | .memidx i =>
+      let rest := moduleMemInitValues m dInits'
+      match literalDataOffset dInit.offset with
+      | some off => rest ∪ buildMemInitialiser dInit i off
+      | none => rest
 
 @[rocq_alias iriswasm.module_glob_init_values]
 def ModuleGlobInitValues (m : Module) (g_inits : List Value) : Prop :=
@@ -905,8 +916,7 @@ def ModuleGlobInitValues (m : Module) (g_inits : List Value) : Prop :=
 
 @[rocq_alias iriswasm.module_inst_table_base_create]
 def moduleInstTableBaseCreate (mt : ModuleTable) : Tableinst :=
-  match mt.type.limits with
-  | { min, max } => { data := List.replicate min (none : Funcelem), maxOpt := max }
+  { entries := RunTable.uniform mt.type.limits.min none, maxOpt := mt.type.limits.max }
 
 @[rocq_alias iriswasm.module_inst_table_base]
 def moduleInstTableBase (mtabs : List ModuleTable) : List Tableinst :=
@@ -914,15 +924,20 @@ def moduleInstTableBase (mtabs : List ModuleTable) : List Tableinst :=
 
 @[rocq_alias iriswasm.table_init_replace_single]
 def tableInitReplaceSingle (t : Tableinst) (offset : Nat) (fns : List Funcelem) : Tableinst :=
-  { data := (t.data.take offset ++ fns ++ t.data.drop (offset + fns.length)).take t.data.length
-    maxOpt := t.maxOpt }
+  { t with entries := t.entries.overwrite offset (fns.take (t.entries.size - offset)) }
+
+theorem data_tableInitReplaceSingle (t : Tableinst) (off : Nat) (fns : List Funcelem) :
+    (tableInitReplaceSingle t off fns).data =
+      let pay := fns.take (t.data.length - off)
+      t.data.take off ++ pay ++ t.data.drop (off + pay.length) := by
+  simp only [tableInitReplaceSingle, Tableinst.data, RunTable.toList_overwrite, RunTable.length_toList]
 
 @[rocq_alias iriswasm.table_init_replace_single_preserve_len]
 theorem table_init_replace_single_preserve_len (t : Tableinst) (offset : Nat)
     (fns : List Funcelem) (t' : Tableinst) (h : tableInitReplaceSingle t offset fns = t') :
     t.data.length = t'.data.length := by
   subst h
-  simp only [tableInitReplaceSingle, List.length_take, List.length_append, List.length_drop]
+  simp only [data_tableInitReplaceSingle, List.length_take, List.length_append, List.length_drop]
   omega
 
 @[rocq_alias iriswasm.lookup_funcaddr]
@@ -960,23 +975,25 @@ def moduleImportInitTabs (m : Module) (inst : Instance) (wts : NatMap Tableinst)
         | none => wts
       else wts) wts
 
-@[rocq_alias iriswasm.module_inst_mem_base_func]
-def moduleInstMemBaseFunc (mt : MemoryType) : Memory :=
-  match mt with
-  | { min, max } =>
-    { data := { data := List.replicate (pageSize * min) (0 : Byte) }, maxOpt := max }
+#rocq_ignore iriswasm.module_inst_mem_base_func "fresh memories retain their full descriptor"
+def moduleInstMemBaseFunc (mt : MemoryType) : Memory := memMk mt
 
 @[rocq_alias iriswasm.module_inst_mem_base]
 def moduleInstMemBase (mmemtypes : List MemoryType) : List Memory :=
   mmemtypes.map moduleInstMemBaseFunc
 
+theorem moduleInstMemBase_agree {mts : List MemoryType}
+    (ht : ∀ mt ∈ mts, moduleMemTyping mt = true) :
+    ∀ mem ∈ moduleInstMemBase mts, MemAgree mem := by
+  intro mem hm
+  obtain ⟨mt, hmt, rfl⟩ := List.mem_map.1 hm
+  exact ⟨ht mt hmt, by simp [moduleInstMemBaseFunc, memMk, lengthMem, Nat.mul_comm]⟩
+
 @[rocq_alias iriswasm.mem_init_replace_single]
 def memInitReplaceSingle (mem : Memory) (offset : Nat) (bs : List Byte) : Memory :=
-  { data := { data := (mem.data.data.take offset ++ bs ++
-      mem.data.data.drop (offset + bs.length)).take mem.data.data.length }
-    maxOpt := mem.maxOpt }
+  { mem with data := mem.data.splice offset (bs.take (lengthMem mem - offset)) }
 
-@[rocq_alias iriswasm.module_inst_build_mems]
+#rocq_ignore iriswasm.module_inst_build_mems "only actual literal offsets select a byte address"
 def moduleInstBuildMems (m : Module) (_inst : Instance) : List Memory :=
   m.data.foldl (fun mems d =>
     let imc := getImportMemCount m
@@ -984,11 +1001,13 @@ def moduleInstBuildMems (m : Module) (_inst : Instance) : List Memory :=
     | .memidx k =>
       if k < imc then mems else
         match mems[k - imc]? with
-        | some mem => mems.set (k - imc)
-            (memInitReplaceSingle mem (assertConst1I32ToNat d.offset) d.init)
+        | some mem =>
+          match literalDataOffset d.offset with
+          | some off => mems.set (k - imc) (memInitReplaceSingle mem off d.init)
+          | none => mems
         | none => mems) (moduleInstMemBase m.mems)
 
-@[rocq_alias iriswasm.module_import_init_mems]
+#rocq_ignore iriswasm.module_import_init_mems "only actual literal offsets select a byte address"
 def moduleImportInitMems (m : Module) (inst : Instance) (wms : NatMap Memory) : NatMap Memory :=
   m.data.foldl (fun wms d =>
     let imc := getImportMemCount m
@@ -998,8 +1017,10 @@ def moduleImportInitMems (m : Module) (inst : Instance) (wms : NatMap Memory) : 
         match inst.memory[k]? with
         | some mAddr =>
           match get? wms mAddr with
-          | some mem => insert wms mAddr
-              (memInitReplaceSingle mem (assertConst1I32ToNat d.offset) d.init)
+          | some mem =>
+            match literalDataOffset d.offset with
+            | some off => insert wms mAddr (memInitReplaceSingle mem off d.init)
+            | none => wms
           | none => wms
         | none => wms
       else wms) wms
@@ -1064,14 +1085,14 @@ def moduleInstResourcesWasm (m : Module) (inst : Instance) (tabInits : List Tabl
 
 end Iris_instantiation
 
+#rocq_ignore iriswasm.module_restrictions "literal data offsets may be i32 or i64"
 /-- Offsets and global initialisers are restricted to constants. -/
-@[rocq_alias iriswasm.module_restrictions]
 def ModuleRestrictions (m : Module) : Prop :=
   (∃ vs : List Value, m.globals.map (·.init) = vs.map fun v => [BasicInstruction.const v]) ∧
   (∃ vi32s : List I32,
     m.elem.map (·.offset) = vi32s.map fun v => [BasicInstruction.const (.int32 v)]) ∧
-  (∃ vi32s : List I32,
-    m.data.map (·.offset) = vi32s.map fun v => [BasicInstruction.const (.int32 v)])
+  (∃ offsets : List AddressOperand,
+    m.data.map (·.offset) = offsets.map fun a => [BasicInstruction.const a.value])
 
 section Iris_instantiation
 variable [WasmG hlc GF]
@@ -1279,21 +1300,22 @@ theorem alloc_tab_state_update (tabs tabs' nt : List Tableinst) (h : tabs' = tab
     · iexact Hbs
     · iexact Hbl
 
-@[rocq_alias iriswasm.alloc_mem_state_update]
-theorem alloc_mem_state_update (mems mems' nm : List Memory) (h : mems' = mems ++ nm) :
+#rocq_ignore iriswasm.alloc_mem_state_update "new memory blocks require valid descriptors and extents"
+theorem alloc_mem_state_update (mems mems' nm : List Memory) (h : mems' = mems ++ nm)
+    (hagree : ∀ mem ∈ nm, MemAgree mem) :
     ⊢ genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (mems.map (·.maxOpt))) -∗ |==>
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (mems.map (·.type.limits.max))) -∗ |==>
       (genHeapInterp (G := WasmG.memHs) (gmapOfMemory mems') ∗
-        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (mems'.map lengthMem)) ∗
-        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (mems'.map (·.maxOpt))) ∗
+        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (mems'.map memLengthMeta)) ∗
+        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (mems'.map (·.type.limits.max))) ∗
         [∗list] i ↦ v ∈ nm, (mems.length + i) ↦[wmblock] v : IProp GF) := by
   subst h
   have h1 := alloc_rows (GF := GF) (G := WasmG.memHs) (nm.map memoryToList) (mems.map memoryToList)
   have h2 := alloc_list (GF := GF) (G := WasmG.memsizeHs) (DFrac.own 1)
-    (fun _ _ => by iintro H; imodintro; iexact H) (nm.map lengthMem) (mems.map lengthMem)
+    (fun _ _ => by iintro H; imodintro; iexact H) (nm.map memLengthMeta) (mems.map memLengthMeta)
   have h3 := alloc_list (GF := GF) (G := WasmG.memlimitHs) DFrac.discard (fun _ _ => @pointsTo_persist _ _ _ _ _ WasmG.memlimitHs _ _ _)
-    (nm.map (·.maxOpt)) (mems.map (·.maxOpt))
+    (nm.map (·.type.limits.max)) (mems.map (·.type.limits.max))
   simp only [List.length_map, BigSepL.bigSepL_map, memoryToList] at h1 h2 h3
   unfold gmapOfMemory memBlock
   simp only [List.map_append]
@@ -1304,11 +1326,18 @@ theorem alloc_mem_state_update (mems mems' nm : List Memory) (h : mems' = mems +
   imodintro
   iframe
   iapply BigSepL.bigSepL_sep_eqv.2
+  isplitr
+  · iapply BigSepL.bigSepL_pure.2
+    ipureintro; exact fun _ _ hv => hagree _ (List.mem_of_getElem? hv)
+  iapply BigSepL.bigSepL_sep_eqv.2
   isplitl [Hb]
   · iexact Hb
   · iapply BigSepL.bigSepL_sep_eqv.2
     isplitl [Hbs]
-    · iexact Hbs
+    · iapply (BigSepL.bigSepL_mono (l := nm) ?_) $$ Hbs
+      intro k mem hm
+      have hmin := (hagree mem (List.mem_of_getElem? hm)).min_eq
+      simp only [memLengthMeta, hmin, memSize, memLengthToken] <;> exact .rfl
     · iexact Hbl
 
 @[rocq_alias iriswasm.alloc_glob_state_update]
@@ -1337,9 +1366,8 @@ private theorem take_drop_shift {α : Type} (L td : List α) (t : α) (off : Nat
 
 @[rocq_alias iriswasm.update_tab]
 def updateTab (tab : Tableinst) (off : Nat) (td' : List Funcelem) : Option Tableinst :=
-  if off + td'.length ≤ tab.data.length then
-    some { data := tab.data.take off ++ td' ++ tab.data.drop (off + td'.length)
-           maxOpt := tab.maxOpt }
+  if off + td'.length ≤ tab.entries.size then
+    some { tab with entries := tab.entries.overwrite off td' }
   else none
 
 @[rocq_alias iriswasm.update_tabs]
@@ -1357,7 +1385,9 @@ theorem update_tab_length (tab : Tableinst) (off : Nat) (td' : List Funcelem) (t
     (h : updateTab tab off td' = some tab') : tab.data.length = tab'.data.length := by
   unfold updateTab at h
   split at h
-  · cases h; simp; omega
+  · cases h
+    simpa only [Tableinst.length_data] using
+      (RunTable.size_overwrite_of_le tab.entries off td' ‹_›).symm
   · cases h
 
 @[rocq_alias iriswasm.update_tab_nil_id]
@@ -1365,7 +1395,7 @@ theorem update_tab_nil_id (tab : Tableinst) (off : Nat) (tab' : Tableinst)
     (h : updateTab tab off [] = some tab') : tab = tab' := by
   unfold updateTab at h
   split at h
-  · cases h; simp
+  · cases h; rfl
   · cases h
 
 @[rocq_alias iriswasm.update_tabs_nil_id]
@@ -1390,12 +1420,17 @@ theorem update_tab_shift (tab tab' : Tableinst) (off : Nat) (t : Funcelem) (td' 
   split at h
   · cases h
     rename_i hle
-    simp only [List.length_cons, List.length_nil] at hle ⊢
-    have h1 : off + (0 + 1) ≤ tab.data.length := by omega
-    have h2 : off + 1 + td'.length ≤
-        (tab.data.take off ++ [t] ++ tab.data.drop (off + (0 + 1))).length := by simp; omega
-    simp only [h1, h2, ↓reduceIte, Option.some.injEq, exists_eq_left', Nat.zero_add,
-      take_drop_shift _ _ _ _ (by omega : off + 1 + td'.length ≤ tab.data.length)]
+    simp only [List.length_cons] at hle
+    have hb : off + [t].length ≤ tab.entries.size := by simp only [List.length_singleton]; omega
+    have hs := RunTable.size_overwrite_of_le tab.entries off [t] hb
+    have ht : off + 1 + td'.length ≤ (tab.entries.overwrite off [t]).size := by omega
+    refine ⟨_, ite_eq_left hb, ?_⟩
+    rw [ite_eq_left ht]
+    congr 2
+    apply RunTable.ext_toList
+    simpa only [RunTable.toList_overwrite, List.length_cons, List.length_nil, Nat.zero_add] using
+      take_drop_shift tab.entries.toList td' t off (by simpa only [RunTable.length_toList] using
+        (show off + 1 + td'.length ≤ tab.entries.size by omega))
   · cases h
 
 @[rocq_alias iriswasm.update_tabs_shift]
@@ -1450,12 +1485,13 @@ theorem tab_block_update_aux (off : Nat) (td td' : List Funcelem) (n : Nat)
         rcases htab : tabs[n]? with _ | tab
         · simp [updateTabs, htab] at h1
         · simp only [updateTabs, htab, updateTab] at h1
-          by_cases hle : off + 1 ≤ tab.data.length
+          by_cases hle : off + 1 ≤ tab.entries.size
           · simp only [List.length_singleton, hle, ite_true, Option.some.injEq] at h1
             subst h1
-            have hs : tab.data.set off b = tab.data.take off ++ [b] ++ tab.data.drop (off + 1) := by
-              rw [List.set_eq_take_append_cons_drop]; simp [show off < tab.data.length by omega]
-            rw [Nat.add_zero, gmap_of_table_insert n off b tabs tab htab (by omega), hs]
+            have ho : off < tab.data.length := by rw [Tableinst.length_data]; omega
+            apply gmap_of_table_insert n off b tabs tab htab ho
+            simp only [Tableinst.data, RunTable.toList_overwrite, List.length_singleton]
+            exact (insert_take_drop off tab.data b ho).symm
           · simp [hle] at h1
       iintro Htm Ht
       icases Htm with ⟨H0, Htm⟩
@@ -1493,11 +1529,19 @@ theorem tab_block_update (tab tab' : Tableinst) (n : Nat) (ws ws' : StoreRecord)
     rw [hws, List.map_set, ← hmax]
     apply List.ext_getElem?; intro i
     rw [List.getElem?_set]; split <;> simp_all
-  have key := tab_block_update_aux (GF := GF) 0 tab.data tab'.data n ws.tables ws'.tables hsize
+  have hlen : tab.data.length = tab'.data.length := by simpa [tabSize] using hsize
+  have hreplace : tab.entries.overwrite 0 tab'.data = tab'.entries := by
+    apply RunTable.ext_toList
+    rw [RunTable.toList_overwrite]
+    change tab.data.take 0 ++ tab'.data ++ tab.data.drop (0 + tab'.data.length) = tab'.data
+    simp only [Nat.zero_add, ← hlen, List.take_zero, List.nil_append, List.drop_length,
+      List.append_nil]
+  have key := tab_block_update_aux (GF := GF) 0 tab.data tab'.data n ws.tables ws'.tables hlen
     (by
       obtain ⟨d', o'⟩ := tab'
-      simp only [tabSize] at hsize hmax
-      simp [updateTabs, htab, updateTab, ← hsize, hws, hmax])
+      change tab.entries.size = d'.size at hsize
+      change tab.maxOpt = o' at hmax
+      simp [updateTabs, htab, updateTab, hreplace, hsize, hws, hmax])
   simp only [Nat.zero_add] at key
   rw [e1, e2]
   unfold tabBlock
@@ -1513,13 +1557,12 @@ theorem init_tab_state_update (ws ws' : StoreRecord) (inst : Instance) (e_off : 
     (hinit : initTab ws inst e_off e = ws')
     (hind : t_ind = inst.tab.getD (match e.table with | .tableidx i => i) 0)
     (hpay : e_pay = e.init.map fun | .funcidx j => inst.funcs[j]?)
-    (hbound : e_off + e.init.length ≤ tab.data.length) :
+    (hbound : e_off + e.init.length ≤ tab.entries.size) :
     ⊢ t_ind ↦[wtblock] tab -∗
       genHeapInterp (G := WasmG.tabHs) (gmapOfTable ws.tables) -∗
       genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (ws.tables.map tabSize)) -∗
       genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (ws.tables.map (·.maxOpt))) -∗ |==>
-      (t_ind ↦[wtblock] { data := tab.data.take e_off ++ e_pay ++
-                          tab.data.drop (e_off + e_pay.length), maxOpt := tab.maxOpt } ∗
+      (t_ind ↦[wtblock] { tab with entries := tab.entries.overwrite e_off e_pay } ∗
         genHeapInterp (G := WasmG.tabHs) (gmapOfTable ws'.tables) ∗
         genHeapInterp (G := WasmG.tabsizeHs) (gmapOfList (ws'.tables.map tabSize)) ∗
         genHeapInterp (G := WasmG.tablimitHs) (gmapOfList (ws'.tables.map (·.maxOpt))) :
@@ -1527,9 +1570,9 @@ theorem init_tab_state_update (ws ws' : StoreRecord) (inst : Instance) (e_off : 
   iintro Hb Ht Hts Htl
   ihave %htab := tab_block_lookup ws.tables t_ind tab $$ Ht Hts Htl Hb
   have hn := (List.getElem?_eq_some_iff.1 htab).1
-  have hb := tab_block_update (GF := GF) tab ⟨tab.data.take e_off ++ e_pay ++
-      tab.data.drop (e_off + e_pay.length), tab.maxOpt⟩ t_ind ws ws'
-    (by simp [tabSize, hpay]; omega) rfl
+  have hb := tab_block_update (GF := GF) tab { tab with entries := tab.entries.overwrite e_off e_pay }
+    t_ind ws ws' (RunTable.size_overwrite_of_le tab.entries e_off e_pay
+      (by simpa [hpay] using hbound)).symm rfl
     (by
       subst hinit hpay
       obtain ⟨⟨k⟩, eo, ei⟩ := e
@@ -1537,8 +1580,7 @@ theorem init_tab_state_update (ws ws' : StoreRecord) (inst : Instance) (e_off : 
       subst hind
       obtain ⟨d, o⟩ := tab
       simp only [initTab, List.getD_eq_getElem?_getD, htab, Option.getD_some]
-      rw [insert_at_insert _ _ _ hn]
-      simp [List.append_assoc])
+      rw [insert_at_insert _ _ _ hn])
   iapply hb $$ Hb Ht Hts Htl
 
 end Iris_instantiation
@@ -1713,6 +1755,7 @@ theorem update_wts_partial_lookup_type (wts wts' : NatMap Tableinst) (inst : Ins
         rw [hn] at hw; cases hw
         refine ih _ _ tab' h (by simp [LawfulPartialMap.get?_insert]) ?_
         have hl := update_tab_length _ _ _ _ hu
+        simp only [Tableinst.length_data] at hl
         simp only [tabTyping, tabSize] at htt ⊢
         simp only [← hl, updateTab_maxOpt hu]
         exact htt
@@ -1725,7 +1768,7 @@ def wtsBoundCheck (wts : NatMap Tableinst) (inst : Instance) (e_offs : List Nat)
     match inst.tab[match e.table with | .tableidx i => i]? with
     | some i =>
       match get? wts i with
-      | some ti => decide (off + e.init.length ≤ ti.data.length)
+      | some ti => decide (off + e.init.length ≤ ti.entries.size)
       | none => false
     | none => false) e_offs elems
 
@@ -1745,16 +1788,15 @@ theorem update_wts_Some (wts : NatMap Tableinst) (inst : Instance) (e_offs : Lis
       simp only [updateWts]
       rcases hi : inst.tab[n]? with _ | i <;> rw [hi] at h0 <;> simp only [reduceCtorEq] at h0 ⊢
       rcases hw : get? wts i with _ | tab <;> rw [hw] at h0 <;> simp only [reduceCtorEq] at h0 ⊢
-      have hle : off + (ini.map fun | .funcidx j => inst.funcs[j]?).length ≤ tab.data.length := by
+      have hle : off + (ini.map fun | .funcidx j => inst.funcs[j]?).length ≤ tab.entries.size := by
         simpa using h0
       have hu : updateTab tab off (ini.map fun | .funcidx j => inst.funcs[j]?) =
-          some { data := tab.data.take off ++ (ini.map fun | .funcidx j => inst.funcs[j]?) ++
-                   tab.data.drop (off + (ini.map fun | .funcidx j => inst.funcs[j]?).length)
-                 maxOpt := tab.maxOpt } := by
+          some { tab with entries := tab.entries.overwrite off (ini.map fun | .funcidx j => inst.funcs[j]?) } := by
         simp only [updateTab, hle, ↓reduceIte]
       rw [hu]
       refine ih _ _ ?_
       have hl := update_tab_length _ _ _ _ hu
+      simp only [Tableinst.length_data] at hl
       refine (congrArg (fun f => List.all2 f offs elems)
         (funext fun off' => funext fun e' => ?_)).trans hrest
       rcases e' with ⟨⟨n'⟩, o', ini'⟩
@@ -1805,17 +1847,15 @@ theorem init_tabs_state_update (ws ws' : StoreRecord) (inst : Instance) (e_offs 
         simp only [reduceCtorEq] at h0 hupd
       rcases hw : get? wts i with _ | tab <;> rw [hw] at h0 hupd <;>
         simp only [reduceCtorEq] at h0 hupd
-      have hle : off + ini.length ≤ tab.data.length := by simpa using h0
-      have hu : updateTab tab off (ini.map fun | .funcidx j => inst.funcs[j]?) =
-          some ⟨tab.data.take off ++ (ini.map fun | .funcidx j => inst.funcs[j]?) ++
-            tab.data.drop (off + (ini.map fun | .funcidx j => inst.funcs[j]?).length), tab.maxOpt⟩ := by
-        simp only [updateTab, List.length_map, hle, ↓reduceIte]
+      have hle : off + ini.length ≤ tab.entries.size := by simpa using h0
+      let pay := ini.map fun | .funcidx j => inst.funcs[j]?
+      let tab' := { tab with entries := tab.entries.overwrite off pay }
+      have hu : updateTab tab off pay = some tab' := by
+        simp only [pay, tab', updateTab, List.length_map, hle, ↓reduceIte]
       rw [hu] at hupd
       have hl := update_tab_length _ _ _ _ hu
-      have hb' : wtsBoundCheck (insert wts i ⟨tab.data.take off ++
-          (ini.map fun | .funcidx j => inst.funcs[j]?) ++
-          tab.data.drop (off + (ini.map fun | .funcidx j => inst.funcs[j]?).length), tab.maxOpt⟩)
-          inst offs elems = true := by
+      simp only [Tableinst.length_data] at hl
+      have hb' : wtsBoundCheck (insert wts i tab') inst offs elems = true := by
         refine (congrArg (fun f => List.all2 f offs elems)
           (funext fun off' => funext fun e' => ?_)).trans hrest
         rcases e' with ⟨⟨n'⟩, o', ini'⟩
@@ -1846,11 +1886,17 @@ end Iris_instantiation
 
 @[rocq_alias iriswasm.update_mem]
 def updateMem (mem : Memory) (off : Nat) (md : List Byte) : Option Memory :=
-  let mld := mem.data.data
-  if off + md.length ≤ mld.length then
-    some { data := { data := mld.take off ++ md ++ mld.drop (off + md.length) }
-           maxOpt := mem.maxOpt }
+  if off + md.length ≤ lengthMem mem then some { mem with data := mem.data.splice off md }
   else none
+
+private theorem updateMem_store (mem : Memory) (off : Nat) (md : List Byte) :
+    updateMem mem off md = store mem 0 off md md.length := by
+  rw [updateMem, store_eq]
+  simp only [Nat.zero_add, bytesTakefill_of_length]
+  split
+  · congr 1
+    exact MemEquiv.eq ⟨rfl, by simp only [MemoryList.data_splice, MemoryList.data_ofBytes]⟩
+  · rfl
 
 @[rocq_alias iriswasm.update_mems]
 def updateMems (mems : List Memory) (off n : Nat) (md : List Byte) : Option (List Memory) :=
@@ -1864,17 +1910,16 @@ def updateMems (mems : List Memory) (off n : Nat) (md : List Byte) : Option (Lis
 @[rocq_alias iriswasm.update_mem_length]
 theorem update_mem_length (mem : Memory) (off : Nat) (md : List Byte) (mem' : Memory)
     (h : updateMem mem off md = some mem') : mem.data.data.length = mem'.data.data.length := by
-  unfold updateMem at h; dsimp only at h
-  split at h
-  · cases h; simp; omega
-  · cases h
+  rw [updateMem_store] at h
+  exact length_store _ _ _ _ _ h
 
 @[rocq_alias iriswasm.update_mem_nil_id]
 theorem update_mem_nil_id (mem : Memory) (off : Nat) (mem' : Memory)
     (h : updateMem mem off [] = some mem') : mem = mem' := by
-  unfold updateMem at h; dsimp only at h
+  unfold updateMem at h
   split at h
-  · cases h; simp
+  · cases h
+    exact MemEquiv.eq ⟨rfl, by simp [MemoryList.data_splice]⟩
   · cases h
 
 @[rocq_alias iriswasm.update_mems_nil_id]
@@ -1895,18 +1940,9 @@ theorem update_mems_nil_id (mems : List Memory) (n off : Nat) (mems' : List Memo
 theorem update_mem_shift (mem mem' : Memory) (off : Nat) (t : Byte) (td' : List Byte)
     (h : updateMem mem off (t :: td') = some mem') :
     ∃ mem0, updateMem mem off [t] = some mem0 ∧ updateMem mem0 (off + 1) td' = some mem' := by
-  unfold updateMem at h ⊢; dsimp only at h ⊢
-  split at h
-  · cases h
-    rename_i hle
-    simp only [List.length_cons, List.length_nil] at hle ⊢
-    have h1 : off + (0 + 1) ≤ mem.data.data.length := by omega
-    have h2 : off + 1 + td'.length ≤
-        (mem.data.data.take off ++ [t] ++ mem.data.data.drop (off + (0 + 1))).length := by
-      simp; omega
-    simp only [h1, h2, ↓reduceIte, Option.some.injEq, exists_eq_left', Nat.zero_add,
-      take_drop_shift _ _ _ _ (by omega : off + 1 + td'.length ≤ mem.data.data.length)]
-  · cases h
+  simp only [updateMem_store] at h ⊢
+  obtain ⟨m, hrest, hfirst⟩ := store_append1 _ _ _ _ _ _ h
+  exact ⟨m, hfirst, hrest⟩
 
 @[rocq_alias iriswasm.update_mems_shift]
 theorem update_mems_shift (mems mems' : List Memory) (off n : Nat) (t : Byte) (td' : List Byte)
@@ -1960,12 +1996,14 @@ theorem mem_block_update_aux (off : Nat) (md md' : List Byte) (n : Nat)
         rcases hmem : mems[n]? with _ | mem
         · simp [updateMems, hmem] at h1
         · simp only [updateMems, hmem, updateMem] at h1
-          by_cases hle : off + 1 ≤ mem.data.data.length
+          by_cases hle : off + 1 ≤ lengthMem mem
           · simp only [List.length_singleton, hle, ite_true, Option.some.injEq] at h1
             subst h1
-            rw [Nat.add_zero, gmap_of_memory_insert n off b mems mem
-              ⟨mem.data.data.take off ++ [b] ++ mem.data.data.drop (off + 1)⟩ hmem (by omega)
-              (by simp [MemoryList.memUpdate, show off < mem.data.data.length by omega])]
+            have hi : off < mem.data.data.length := by rw [lengthMem_eq_data_length] at hle; omega
+            rw [Nat.add_zero, gmap_of_memory_insert n off b mems mem (mem.data.splice off [b]) hmem hi]
+            rw [MemoryList.update_eq, if_pos (by simpa only [MemoryList.length_data] using hi),
+              ← MemoryList.ofBytes_data (mem.data.splice off [b]), MemoryList.data_splice,
+              insert_take_drop _ _ _ hi, List.length_singleton]
           · simp [hle] at h1
       iintro Htm Ht
       icases Htm with ⟨H0, Htm⟩
@@ -1979,84 +2017,88 @@ theorem mem_block_update_aux (off : Nat) (md md' : List Byte) (n : Nat)
         · iexact Htm
       · iexact Ht
 
-@[rocq_alias iriswasm.mem_block_update]
+#rocq_ignore iriswasm.mem_block_update "updating bytes preserves the entire memory descriptor"
 theorem mem_block_update (mem mem' : Memory) (n : Nat) (ws ws' : StoreRecord)
-    (hlen : lengthMem mem = lengthMem mem') (hmax : mem.maxOpt = mem'.maxOpt)
+    (hlen : lengthMem mem = lengthMem mem') (htype : mem.type = mem'.type)
     (hws : ws'.mems = ws.mems.set n mem') :
     ⊢ n ↦[wmblock] mem -∗
       genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗ |==>
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗ |==>
       (n ↦[wmblock] mem' ∗
         genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws'.mems) ∗
-        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map lengthMem)) ∗
-        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.maxOpt))) :
+        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map memLengthMeta)) ∗
+        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.type.limits.max))) :
         IProp GF) := by
   iintro Hb Ht Hts Htl
   ihave %hm := mem_block_lookup ws.mems n mem $$ Ht Hts Htl Hb
   obtain ⟨m0, hm0, hd, ho⟩ := hm
   have hmem : ws.mems[n]? = some mem := by
-    rw [hm0]; obtain ⟨⟨d⟩, o⟩ := m0; obtain ⟨⟨d'⟩, o'⟩ := mem; simp_all
+    exact MemEquiv.eq (m₁ := m0) (m₂ := mem) ⟨ho, hd⟩ ▸ hm0
   have hn := (List.getElem?_eq_some_iff.1 hmem).1
-  have e1 : ws'.mems.map lengthMem = ws.mems.map lengthMem := by
-    rw [hws, List.map_set, ← hlen]
+  have hmeta : memLengthMeta mem = memLengthMeta mem' := by simp [memLengthMeta, hlen, htype]
+  have e1 : ws'.mems.map memLengthMeta = ws.mems.map memLengthMeta := by
+    rw [hws, List.map_set, ← hmeta]
     apply List.ext_getElem?; intro i
     rw [List.getElem?_set]; split <;> simp_all
-  have e2 : ws'.mems.map (·.maxOpt) = ws.mems.map (·.maxOpt) := by
-    rw [hws, List.map_set, ← hmax]
+  have e2 : ws'.mems.map (·.type.limits.max) = ws.mems.map (·.type.limits.max) := by
+    rw [hws, List.map_set]
+    simp only [← htype]
     apply List.ext_getElem?; intro i
     rw [List.getElem?_set]; split <;> simp_all
-  have key := mem_block_update_aux (GF := GF) 0 mem.data.data mem'.data.data n ws.mems ws'.mems hlen
+  have hlen' : mem.data.data.length = mem'.data.data.length := by
+    simpa only [lengthMem_eq_data_length] using hlen
+  have key := mem_block_update_aux (GF := GF) 0 mem.data.data mem'.data.data n ws.mems ws'.mems hlen'
     (by
-      obtain ⟨⟨d'⟩, o'⟩ := mem'
-      simp only [lengthMem, MemoryList.lengthMem] at hlen hmax
-      simp [updateMems, hmem, updateMem, ← hlen, hws, hmax])
+      have hb : 0 + mem'.data.data.length ≤ lengthMem mem := by rw [lengthMem_eq_data_length]; omega
+      have hm' : ({ mem with data := mem.data.splice 0 mem'.data.data } : Memory) = mem' :=
+        MemEquiv.eq ⟨htype, by simp only [MemoryList.data_splice, Nat.zero_add, List.take_zero,
+          List.nil_append, List.drop_eq_nil_of_le (Nat.le_of_eq hlen'), List.append_nil]⟩
+      simp only [updateMems, hmem, updateMem, hb, ↓reduceIte, hm', hws])
   simp only [Nat.zero_add] at key
   rw [e1, e2]
   unfold memBlock
-  rw [← hlen, ← hmax]
-  icases Hb with ⟨Htm, Hsz, Hlim⟩
+  rw [← hlen, ← htype]
+  icases Hb with ⟨%hag, Htm, Hsz, Hlim⟩
+  have hag' : MemAgree mem' := by simpa only [MemAgree, ← htype, ← hlen] using hag
   imod key $$ Htm Ht with ⟨Htm, Ht⟩
   imodintro
   iframe
+  ipureintro; exact hag'
 
-@[rocq_alias iriswasm.init_mem_state_update]
+#rocq_ignore iriswasm.init_mem_state_update "write only to the successfully resolved memory"
 theorem init_mem_state_update (ws ws' : StoreRecord) (inst : Instance) (d_off : Nat)
     (d : ModuleData) (m_ind : Nat) (mem : Memory) (d_pay : List Byte) (mem' : Memory)
-    (hinit : initMem ws inst d_off d = ws')
-    (hind : m_ind = inst.memory.getD (match d.data with | .memidx i => i) 0)
+    (hinit : initMem ws inst d_off d = .ok ws')
+    (hind : inst.memory[match d.data with | .memidx i => i]? = some m_ind)
     (heqv : MemEquiv mem'
-      { data := { data := mem.data.data.take d_off ++ d_pay ++
-                            mem.data.data.drop (d_off + d_pay.length) },
-        maxOpt := mem.maxOpt })
+      { mem with data := mem.data.splice d_off d_pay })
     (hpay : d_pay = d.init)
     (hbound : d_off + d.init.length ≤ lengthMem mem) :
     ⊢ m_ind ↦[wmblock] mem -∗
       genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗ |==>
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗ |==>
       (m_ind ↦[wmblock] mem' ∗
         genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws'.mems) ∗
-        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map lengthMem)) ∗
-        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.maxOpt))) :
+        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map memLengthMeta)) ∗
+        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.type.limits.max))) :
         IProp GF) := by
   iintro Hb Ht Hts Htl
   ihave %hm := mem_block_lookup ws.mems m_ind mem $$ Ht Hts Htl Hb
   obtain ⟨m0, hm0, hd, ho⟩ := hm
   have hmem : ws.mems[m_ind]? = some mem := by
-    rw [hm0]; obtain ⟨⟨d⟩, o⟩ := m0; obtain ⟨⟨d'⟩, o'⟩ := mem; simp_all
-  have hn := (List.getElem?_eq_some_iff.1 hmem).1
-  have hb := mem_block_update (GF := GF) mem ⟨⟨mem.data.data.take d_off ++ d_pay ++
-      mem.data.data.drop (d_off + d_pay.length)⟩, mem.maxOpt⟩ m_ind ws ws'
-    (by simp [lengthMem, MemoryList.lengthMem, hpay] at hbound ⊢; omega) rfl
+    exact MemEquiv.eq (m₁ := m0) (m₂ := mem) ⟨ho, hd⟩ ▸ hm0
+  have hb := mem_block_update (GF := GF) mem { mem with data := mem.data.splice d_off d_pay }
+    m_ind ws ws' (by
+      simp only [lengthMem_eq_data_length, MemoryList.data_splice, List.length_append,
+        List.length_take, List.length_drop, hpay] at hbound ⊢; omega) rfl
     (by
-      subst hinit hpay
-      obtain ⟨⟨k⟩, eo, ei⟩ := d
-      simp only [List.getD_eq_getElem?_getD] at hind
-      subst hind
-      simp only [initMem, List.getD_eq_getElem?_getD, hmem, Option.getD_some]
-      rw [insert_at_insert _ _ _ hn]
-      simp [List.append_assoc])
+      obtain ⟨i, m, hi, hm, -, rfl⟩ := initMem_ok_iff.mp hinit
+      rw [hind] at hi; cases hi
+      rw [hmem] at hm; cases hm
+      subst hpay
+      rfl)
   have e := mem_equiv_wmblock_rewrite (GF := GF) (n := m_ind) heqv
   imod hb $$ Hb Ht Hts Htl with ⟨Hb, Hrest⟩
   imodintro
@@ -2102,9 +2144,9 @@ def updateWmsPartial (wms : NatMap Memory) (inst : Instance) :
       | none => none
   | [], _ :: _ => none
 
-private theorem updateMem_maxOpt {mem mem' : Memory} {off : Nat} {md : List Byte}
-    (h : updateMem mem off md = some mem') : mem'.maxOpt = mem.maxOpt := by
-  unfold updateMem at h; dsimp only at h
+private theorem updateMem_type {mem mem' : Memory} {off : Nat} {md : List Byte}
+    (h : updateMem mem off md = some mem') : mem'.type = mem.type := by
+  unfold updateMem at h
   split at h
   · cases h; rfl
   · cases h
@@ -2216,10 +2258,7 @@ theorem update_wms_partial_lookup_type (wms wms' : NatMap Memory) (inst : Instan
       · subst hin
         rw [hn] at hw; cases hw
         refine ih _ _ mem' h (by simp [LawfulPartialMap.get?_insert]) ?_
-        have hl := update_mem_length _ _ _ _ hu
-        simp only [memTyping, memSize, Wasm.lengthMem, MemoryList.lengthMem] at hmt ⊢
-        simp only [← hl, updateMem_maxOpt hu]
-        exact hmt
+        simpa only [memTyping, updateMem_type hu] using hmt
       · exact ih _ _ _ h (by simp [LawfulPartialMap.get?_insert, hin, hn]) hmt
 
 @[rocq_alias iriswasm.wms_bound_check]
@@ -2250,12 +2289,8 @@ theorem update_wms_Some (wms : NatMap Memory) (inst : Instance) (d_offs : List N
       rcases hi : inst.memory[n]? with _ | i <;> rw [hi] at h0 <;>
         simp only [reduceCtorEq] at h0 ⊢
       rcases hw : get? wms i with _ | mem <;> rw [hw] at h0 <;> simp only [reduceCtorEq] at h0 ⊢
-      have hle : off + ini.length ≤ mem.data.data.length := by
-        simp only [Wasm.lengthMem, MemoryList.lengthMem] at h0; exact of_decide_eq_true h0
-      have hu : updateMem mem off ini =
-          some { data := { data := mem.data.data.take off ++ ini ++
-                   mem.data.data.drop (off + ini.length) }
-                 maxOpt := mem.maxOpt } := by
+      have hle : off + ini.length ≤ lengthMem mem := of_decide_eq_true h0
+      have hu : updateMem mem off ini = some { mem with data := mem.data.splice off ini } := by
         simp only [updateMem, hle, ↓reduceIte]
       rw [hu]
       refine ih _ _ ?_
@@ -2271,10 +2306,7 @@ theorem update_wms_Some (wms : NatMap Memory) (inst : Instance) (d_offs : List N
         rw [LawfulPartialMap.get?_insert]
         by_cases hii : i = i'
         · subst hii
-          simp only [↓reduceIte, hw, Wasm.lengthMem, MemoryList.lengthMem, List.length_append,
-            List.length_take, List.length_drop]
-          congr 2
-          omega
+          simp only [↓reduceIte, hw, lengthMem_eq_data_length, ← hl]
         · simp only [hii, ↓reduceIte]
 
 section Iris_instantiation
@@ -2285,22 +2317,22 @@ variable [WasmG hlc GF]
 theorem init_mems_state_update (ws ws' : StoreRecord) (inst : Instance)
     (d_offs d_offnats : List Nat) (datas : List ModuleData) (wms wms' : NatMap Memory)
     (hoffs : d_offnats = d_offs)
-    (hinit : initMems ws inst d_offs datas = ws')
+    (hinit : initMems ws inst d_offs datas = .ok ws')
     (hbound : wmsBoundCheck wms inst d_offs datas = true)
     (hupd : updateWms wms inst d_offnats datas = some wms') :
     ⊢ genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws.mems) -∗
-      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map lengthMem)) -∗
-      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.maxOpt))) -∗
+      genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws.mems.map memLengthMeta)) -∗
+      genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws.mems.map (·.type.limits.max))) -∗
       ([∗map] n ↦ meminst ∈ wms, n ↦[wmblock] meminst) -∗ |==>
       (genHeapInterp (G := WasmG.memHs) (gmapOfMemory ws'.mems) ∗
-        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map lengthMem)) ∗
-        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.maxOpt))) ∗
+        genHeapInterp (G := WasmG.memsizeHs) (gmapOfList (ws'.mems.map memLengthMeta)) ∗
+        genHeapInterp (G := WasmG.memlimitHs) (gmapOfList (ws'.mems.map (·.type.limits.max))) ∗
         [∗map] n ↦ meminst ∈ wms', n ↦[wmblock] meminst : IProp GF) := by
   subst hoffs
   induction datas generalizing ws d_offnats wms with
   | nil =>
     simp only [updateWms, Option.some.injEq] at hupd
-    have : ws' = ws := by subst hinit; simp [initMems]
+    have : ws = ws' := by cases d_offnats <;> cases hinit <;> rfl
     subst hupd this
     iintro Ht Hts Htl Hm
     imodintro
@@ -2318,17 +2350,11 @@ theorem init_mems_state_update (ws ws' : StoreRecord) (inst : Instance)
       rcases hw : get? wms i with _ | mem <;> rw [hw] at h0 hupd <;>
         simp only [reduceCtorEq] at h0 hupd
       have hle0 : off + ini.length ≤ lengthMem mem := of_decide_eq_true h0
-      have hle : off + ini.length ≤ mem.data.data.length := by
-        simpa [Wasm.lengthMem, MemoryList.lengthMem] using hle0
-      have hu : updateMem mem off ini =
-          some { data := { data := mem.data.data.take off ++ ini ++
-                   mem.data.data.drop (off + ini.length) }
-                 maxOpt := mem.maxOpt } := by
-        simp only [updateMem, hle, ↓reduceIte]
+      have hu : updateMem mem off ini = some { mem with data := mem.data.splice off ini } := by
+        simp only [updateMem, hle0, ↓reduceIte]
       rw [hu] at hupd
       have hl := update_mem_length _ _ _ _ hu
-      have hb' : wmsBoundCheck (insert wms i ⟨⟨mem.data.data.take off ++ ini ++
-                   mem.data.data.drop (off + ini.length)⟩, mem.maxOpt⟩)
+      have hb' : wmsBoundCheck (insert wms i { mem with data := mem.data.splice off ini })
           inst offs datas = true := by
         refine (congrArg (fun f => List.all2 f offs datas)
           (funext fun off' => funext fun d' => ?_)).trans hrest
@@ -2341,14 +2367,12 @@ theorem init_mems_state_update (ws ws' : StoreRecord) (inst : Instance)
           rw [LawfulPartialMap.get?_insert]
           by_cases hii : i = i'
           · subst hii
-            simp only [↓reduceIte, hw, Wasm.lengthMem, MemoryList.lengthMem, List.length_append,
-              List.length_take, List.length_drop]
-            congr 2
-            omega
+            simp only [↓reduceIte, hw, lengthMem_eq_data_length, ← hl]
           · simp only [hii, ↓reduceIte]
-      have key := ih _ offs _ hupd (by rw [← hinit]; rfl) hb'
-      have hstep := init_mem_state_update (GF := GF) ws _ inst off ⟨⟨k⟩, o, ini⟩ i mem ini _ rfl
-        (by simp [List.getD_eq_getElem?_getD, hi]) ⟨rfl, rfl⟩ rfl hle0
+      obtain ⟨mid, hhead, htail⟩ := initMems_cons.mp hinit
+      have key := ih mid offs _ hupd htail hb'
+      have hstep := init_mem_state_update (GF := GF) ws mid inst off ⟨⟨k⟩, o, ini⟩ i mem ini _ hhead
+        hi ⟨rfl, rfl⟩ rfl hle0
       iintro Ht Hts Htl Hm
       icases (BigSepM.bigSepM_delete hw).1 $$ Hm with ⟨Hb, Hm⟩
       imod hstep $$ Hb Ht Hts Htl with ⟨Hb, Ht, Hts, Htl⟩

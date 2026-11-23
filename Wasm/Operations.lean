@@ -29,18 +29,14 @@ def writeBytes (m : Memory) (startIdx : Nat) (bs : Bytes) : Option Memory :=
       | some dat => dat.memUpdate (startIdx + off) b)
     bs (some m.data)
   match x with
-  | some dat => some { data := dat, maxOpt := m.maxOpt }
+  | some dat => some { m with data := dat }
   | none => none
 
 @[rocq_alias iriswasm.upd_s_mem]
 def updSMem (s : StoreRecord) (m : List Memory) : StoreRecord :=
   { funcs := s.funcs, tables := s.tables, mems := m, globals := s.globals }
 
-@[rocq_alias iriswasm.page_size]
-def pageSize : Nat := 64 * 1024
-
-@[rocq_alias iriswasm.page_limit]
-def pageLimit : Nat := 65536
+#rocq_ignore iriswasm.page_limit "Use AddrType.pageLimit for the selected memory's width"
 
 @[rocq_alias iriswasm.ml_valid]
 def MlValid (m : MemoryList) : Prop := m.lengthMem % pageSize = 0
@@ -51,25 +47,46 @@ def lengthMem (m : Memory) : Nat := m.data.lengthMem
 @[rocq_alias iriswasm.mem_size]
 def memSize (m : Memory) : Nat := lengthMem m / pageSize
 
+/-- The authoritative extent includes the stored minimum even on malformed raw instances. -/
+abbrev memLengthMeta (m : Memory) : AddrType × Nat × Nat :=
+  (m.type.address, lengthMem m, m.type.limits.min)
+
+/-- A typed extent token additionally agrees with the minimum implied by its byte length. -/
+abbrev memLengthToken (p : AddrType × Nat) : AddrType × Nat × Nat := (p.1, p.2, p.2 / pageSize)
+
+/-- A typed byte extent consists of whole pages and does not exceed the width's Core limit. -/
+def WellSized (aw : AddrType) (n : Nat) : Prop :=
+  n % pageSize = 0 ∧ n / pageSize ≤ aw.pageLimit
+
+theorem WellSized.pages_mul {aw n} (h : WellSized aw n) : n = n / pageSize * pageSize := by
+  have hdiv := Nat.mod_add_div n pageSize
+  simpa [h.1, Nat.mul_comm] using hdiv.symm
+
+theorem WellSized.pages_fit {aw n} (h : WellSized aw n) : n / pageSize < 2^aw.width :=
+  Nat.lt_of_le_of_lt h.2 aw.pageLimit_lt_capacity
+
+theorem WellSized.grow {aw n delta} (h : WellSized aw n)
+    (hb : n / pageSize + delta ≤ aw.pageLimit) : WellSized aw (n + delta * pageSize) := by
+  unfold WellSized at *
+  simp [Nat.add_mod, Nat.add_mul_div_right, pageSize] at *
+  omega
+
 /-- Grow the memory by `lenDelta` pages. -/
-@[rocq_alias iriswasm.operations.mem_grow]
 def memGrow (m : Memory) (lenDelta : Nat) : Option Memory :=
   let newSize := memSize m + lenDelta
-  let newMemData := m.data.memGrow (lenDelta * pageSize)
-  if newSize ≤ pageLimit then
-    match m.maxOpt with
-    | some maxlim =>
-      if newSize ≤ maxlim then some { data := newMemData, maxOpt := m.maxOpt } else none
-    | none => some { data := newMemData, maxOpt := m.maxOpt }
+  if newSize ≤ m.type.address.pageLimit && m.type.limits.max.all (newSize ≤ ·) then
+    some { data := m.data.memGrow (lenDelta * pageSize)
+           type := {m.type with limits := {m.type.limits with min := newSize}} }
   else none
 
 @[rocq_alias iriswasm.load]
 def load (m : Memory) (n : Nat) (off : StaticOffset) (l : Nat) : Option Bytes :=
   if n + (off + l) ≤ lengthMem m then readBytes m (n + off) l else none
 
-/-- Identity, as upstream (sign extension unimplemented in iriswasm). -/
-@[rocq_alias iriswasm.sign_extend]
-def signExtend (_s : Sx) (_l : Nat) (bs : Bytes) : Bytes := bs
+/-- Extend the most significant byte of a little-endian packed integer to `len` bytes. -/
+def signExtend (sx : Sx) (len : Nat) (bs : Bytes) : Bytes :=
+  let pad := if sx == .s && (bs.getLast?.getD 0).msb then 0xff else 0
+  bytesTakefill pad len bs
 
 @[rocq_alias iriswasm.load_packed]
 def loadPacked (sx : Sx) (m : Memory) (n : Nat) (off : StaticOffset) (lp : Nat) (l : Nat) :
@@ -90,6 +107,7 @@ def wasmDeserialise (bs : Bytes) (vt : ValueType) : Value :=
   | .i64 => .int64 (BitVec.ofInt 64 (decodeInt bs))
   | .f32 => .float32 ⟨BitVec.ofInt 32 (decodeInt bs)⟩
   | .f64 => .float64 ⟨BitVec.ofInt 64 (decodeInt bs)⟩
+  | .v128 => .vec128 (BitVec.ofInt 128 (decodeInt bs))
 
 @[rocq_alias iriswasm.typeof]
 def typeof (v : Value) : ValueType :=
@@ -98,6 +116,19 @@ def typeof (v : Value) : ValueType :=
   | .int64 _ => .i64
   | .float32 _ => .f32
   | .float64 _ => .f64
+  | .vec128 _ => .v128
+
+@[simp] theorem AddrType.typeof_natValue (aw : AddrType) (n : Nat) :
+    typeof (aw.natValue n) = aw.valueType := by cases aw <;> rfl
+
+@[simp] theorem AddressOperand.typeof_value (a : AddressOperand) :
+    typeof a.value = a.address.valueType := by cases a <;> rfl
+
+theorem AddressOperand.exists_of_type {v : Value} {aw : AddrType} (h : typeof v = aw.valueType) :
+    ∃ a : AddressOperand, a.value = v ∧ a.address = aw := by
+  cases aw <;> cases v <;> simp_all [typeof, AddrType.valueType]
+  · exact ⟨.i32 _, rfl, rfl⟩
+  · exact ⟨.i64 _, rfl, rfl⟩
 
 @[rocq_alias iriswasm.option_projl]
 def optionProjl {A B : Type} (x : Option (A × B)) : Option A := x.map Prod.fst
@@ -112,6 +143,7 @@ def lengthT (t : ValueType) : Nat :=
   | .i64 => 8
   | .f32 => 4
   | .f64 => 8
+  | .v128 => 16
 
 @[rocq_alias iriswasm.length_tp]
 def lengthTp (tp : PackedType) : Nat :=
@@ -124,12 +156,12 @@ def lengthTp (tp : PackedType) : Nat :=
 def isIntT (t : ValueType) : Bool :=
   match t with
   | .i32 | .i64 => true
-  | .f32 | .f64 => false
+  | _ => false
 
 @[rocq_alias iriswasm.is_float_t]
 def isFloatT (t : ValueType) : Bool :=
   match t with
-  | .i32 | .i64 => false
+  | .i32 | .i64 | .v128 => false
   | .f32 | .f64 => true
 
 @[rocq_alias iriswasm.is_mut]
@@ -153,6 +185,12 @@ def appUnopF {α : Type} [Float.MixinOf α] (fop : UnopF) : α → α :=
   | .nearest => Float.MixinOf.nearest
   | .sqrt => Float.MixinOf.sqrt
 
+def unopTypeOK (t : ValueType) : Unop → Bool
+  | .i _ => isIntT t
+  | .f _ => isFloatT t
+  | .extendS p => isIntT t && decide (lengthTp p < lengthT t)
+  | .vnot => t == .v128
+
 @[rocq_alias iriswasm.app_unop]
 def appUnop (op : Unop) (v : Value) : Value :=
   match op, v with
@@ -160,6 +198,9 @@ def appUnop (op : Unop) (v : Value) : Value :=
   | .i iop, .int64 c => .int64 (appUnopI iop c)
   | .f fop, .float32 c => .float32 (appUnopF fop c)
   | .f fop, .float64 c => .float64 (appUnopF fop c)
+  | .extendS p, .int32 c => .int32 ((c.setWidth (8 * lengthTp p)).signExtend 32)
+  | .extendS p, .int64 c => .int64 ((c.setWidth (8 * lengthTp p)).signExtend 64)
+  | .vnot, .vec128 x => .vec128 (~~~x)
   | _, _ => v
 
 @[rocq_alias iriswasm.app_binop_i]
@@ -194,6 +235,20 @@ def appBinopF {α : Type} [Float.MixinOf α] (fop : BinopF) : α → α → Opti
   | .max => addSome Float.MixinOf.max
   | .copysign => addSome Float.MixinOf.copysign
 
+def vbitselect (x y mask : BitVec 128) : BitVec 128 := (x &&& mask) ||| (y &&& (~~~mask))
+
+def appVecBinop (op : VecBinop) (x y : BitVec 128) : BitVec 128 :=
+  match op with
+  | .and => x &&& y
+  | .andNot => x &&& (~~~y)
+  | .or => x ||| y
+  | .xor => x ^^^ y
+
+def binopTypeOK (t : ValueType) : Binop → Bool
+  | .i _ => isIntT t
+  | .f _ => isFloatT t
+  | .v _ => t == .v128
+
 @[rocq_alias iriswasm.app_binop]
 def appBinop (op : Binop) (v1 v2 : Value) : Option Value :=
   match op, v1, v2 with
@@ -201,12 +256,12 @@ def appBinop (op : Binop) (v1 v2 : Value) : Option Value :=
   | .i iop, .int64 c1, .int64 c2 => (appBinopI iop c1 c2).map .int64
   | .f fop, .float32 c1, .float32 c2 => (appBinopF fop c1 c2).map .float32
   | .f fop, .float64 c1, .float64 c2 => (appBinopF fop c1 c2).map .float64
+  | .v vop, .vec128 x, .vec128 y => some (.vec128 (appVecBinop vop x y))
   | _, _, _ => none
 
-@[rocq_alias iriswasm.app_testop_i]
-def appTestopI {w : Nat} (o : Testop) : BitVec w → Bool :=
-  match o with
-  | .eqz => Int.ieqz
+def testopTypeOK (t : ValueType) : Testop → Bool
+  | .eqz => isIntT t
+  | .anyTrue => t == .v128
 
 @[rocq_alias iriswasm.app_relop_i]
 def appRelopI {w : Nat} (rop : RelopI) : BitVec w → BitVec w → Bool :=
@@ -231,6 +286,10 @@ def appRelopF {α : Type} [Float.MixinOf α] (rop : RelopF) : α → α → Bool
   | .gt => Float.MixinOf.gt
   | .le => Float.MixinOf.le
   | .ge => Float.MixinOf.ge
+
+def relopTypeOK (t : ValueType) : Relop → Bool
+  | .i _ => isIntT t
+  | .f _ => isFloatT t
 
 @[rocq_alias iriswasm.app_relop]
 def appRelop (op : Relop) (v1 v2 : Value) : Bool :=
@@ -283,19 +342,13 @@ def sglob (s : StoreRecord) (i : Instance) (j : Nat) : Option Global :=
 def sglobVal (s : StoreRecord) (i : Instance) (j : Nat) : Option Value :=
   (sglob s i j).map Global.val
 
-@[rocq_alias iriswasm.smem_ind]
-def smemInd (_s : StoreRecord) (i : Instance) : Option Nat :=
-  match i.memory with
-  | [] => none
-  | k :: _ => some k
-
 @[rocq_alias iriswasm.tab_size]
-def tabSize (t : Tableinst) : Nat := t.data.length
+def tabSize (t : Tableinst) : Nat := t.entries.size
 
 /-- The `j`th entry of the `i`th table of the store. -/
 @[rocq_alias iriswasm.stab_index]
 def stabIndex (s : StoreRecord) (i j : Nat) : Option Nat :=
-  optionBind (fun x => x) (optionBind (fun stabI => stabI.data[j]?) s.tables[i]?)
+  optionBind (fun x => x) (optionBind (fun stabI => stabI.entries.get? j) s.tables[i]?)
 
 @[rocq_alias iriswasm.stab_addr]
 def stabAddr (s : StoreRecord) (f : Frame) (c : Nat) : Option Nat :=
@@ -354,7 +407,8 @@ def tabExtension (t1 t2 : Tableinst) : Bool :=
 
 @[rocq_alias iriswasm.mem_extension]
 def memExtension (m1 m2 : Memory) : Bool :=
-  decide (memSize m1 ≤ memSize m2) && m1.maxOpt == m2.maxOpt
+  m1.type.address == m2.type.address && m1.type.limits.max == m2.type.limits.max &&
+    decide (m1.type.limits.min ≤ m2.type.limits.min) && decide (lengthMem m1 ≤ lengthMem m2)
 
 @[rocq_alias iriswasm.store_extension]
 def storeExtension (s s' : StoreRecord) : Bool :=
@@ -416,22 +470,16 @@ theorem split_vals_e_not_const (es : List AdministrativeInstruction) (vs : List 
   | nil => simp [splitValsE]
   | cons a es ih =>
     intro h hc
-    match a, h with
-    | .basic (.const v), h =>
-      simp only [splitValsE] at h
-      exact ih _ (by rw [← Prod.mk.inj h |>.2]) hc
-    | .basic .unreachable, h | .basic .nop, h | .basic .drop, h | .basic .select, h
-    | .basic (.block ..), h | .basic (.loop ..), h | .basic (.if_ ..), h | .basic (.br _), h
-    | .basic (.brIf _), h | .basic (.brTable ..), h | .basic .return_, h
-    | .basic (.call _), h | .basic (.callIndirect _), h | .basic (.getLocal _), h
-    | .basic (.setLocal _), h | .basic (.teeLocal _), h | .basic (.getGlobal _), h
-    | .basic (.setGlobal _), h | .basic (.load ..), h | .basic (.store ..), h
-    | .basic .currentMemory, h | .basic .growMemory, h | .basic (.unop ..), h
-    | .basic (.binop ..), h | .basic (.testop ..), h | .basic (.relop ..), h
-    | .basic (.cvtop ..), h | .trap, h | .invoke _, h | .label .., h | .local .., h
-    | .callHost .., h =>
-      simp only [splitValsE, Prod.mk.injEq, List.cons.injEq] at h
-      obtain ⟨-, rfl, -⟩ := h; simp [isConst] at hc
+    have nonconst (h₁ : isConst a = false) (h₂ : splitValsE (a :: es) = ([], a :: es)) : False := by
+      simp only [h₂, Prod.mk.injEq, List.cons.injEq] at h
+      obtain ⟨-, rfl, -⟩ := h
+      simp_all
+    cases a with
+    | basic b =>
+      cases b <;> first
+        | exact nonconst rfl rfl
+        | (simp only [splitValsE] at h; exact ih _ (by rw [← (Prod.mk.inj h).2]) hc)
+    | _ => exact nonconst rfl rfl
 
 @[rocq_alias iriswasm.split_n]
 def splitN : List Value → Nat → List Value × List Value
@@ -561,25 +609,44 @@ def resultTypesAgree (ts : ResultType) (r : Result) : Bool :=
   | .values vs => List.all2 typesAgree ts vs
   | .trap => true
 
+/-- Scalar packed accesses extend or truncate an integer of strictly greater width. -/
+def packedTypeOK (tp : PackedType) (t : ValueType) : Bool :=
+  isIntT t && decide (lengthTp tp < lengthT t)
+
 @[rocq_alias iriswasm.load_store_t_bounds]
 def loadStoreTBounds (a : AlignmentExponent) (tp : Option PackedType) (t : ValueType) : Bool :=
   match tp with
   | none => decide (2 ^ a ≤ lengthT t)
-  | some tp' => decide (2 ^ a ≤ lengthTp tp') && decide (lengthTp tp' < lengthT t) && isIntT t
+  | some tp' => decide (2 ^ a ≤ lengthTp tp') && packedTypeOK tp' t
 
-@[rocq_alias iriswasm.cvt_i32]
+theorem packedTypeOK_of_bounds {a tp t} (h : loadStoreTBounds a (some tp) t = true) :
+    packedTypeOK tp t = true := by
+  simp only [loadStoreTBounds, Bool.and_eq_true] at h
+  exact h.2
+
+@[rocq_alias iriswasm.convert_helper]
+def convertHelper (sxo : Option Sx) (t1 t2 : ValueType) : Bool :=
+  t1 != .v128 && t2 != .v128 && ((sxo == none) ==
+    ((isFloatT t1 && isFloatT t2) || (isIntT t1 && isIntT t2 && decide (lengthT t1 < lengthT t2))))
+
+@[rocq_alias iriswasm.convert_cond]
+def convertCond (t1 t2 : ValueType) (sxo : Option Sx) : Bool :=
+  t1 != t2 && convertHelper sxo t1 t2
+
+def reinterpretCond (dst src : ValueType) : Bool :=
+  dst != src && lengthT dst == lengthT src
+
 def cvtI32 (s : Option Sx) (v : Value) : Option I32 :=
   match v with
-  | .int32 _ => none
+  | .int32 _ | .vec128 _ => none
   | .int64 c => some (wasmWrap c)
-  -- `.s` uses the unsigned truncation, as upstream `operations.v` does
   | .float32 c => match s with
     | some .u => Float.MixinOf.ui32Trunc c
-    | some .s => Float.MixinOf.ui32Trunc c
+    | some .s => Float.MixinOf.si32Trunc c
     | none => none
   | .float64 c => match s with
     | some .u => Float.MixinOf.ui32Trunc c
-    | some .s => Float.MixinOf.ui32Trunc c
+    | some .s => Float.MixinOf.si32Trunc c
     | none => none
 
 @[rocq_alias iriswasm.cvt_i64]
@@ -589,7 +656,7 @@ def cvtI64 (s : Option Sx) (v : Value) : Option I64 :=
     | some .u => some (wasmExtendU c)
     | some .s => some (wasmExtendS c)
     | none => none
-  | .int64 _ => none
+  | .int64 _ | .vec128 _ => none
   | .float32 c => match s with
     | some .u => Float.MixinOf.ui64Trunc c
     | some .s => Float.MixinOf.si64Trunc c
@@ -610,7 +677,7 @@ def cvtF32 (s : Option Sx) (v : Value) : Option F32 :=
     | some .u => some (Float.MixinOf.convertUi64 c)
     | some .s => some (Float.MixinOf.convertSi64 c)
     | none => none
-  | .float32 _ => none
+  | .float32 _ | .vec128 _ => none
   | .float64 c => some (wasmDemote c)
 
 @[rocq_alias iriswasm.cvt_f64]
@@ -625,7 +692,7 @@ def cvtF64 (s : Option Sx) (v : Value) : Option F64 :=
     | some .s => some (Float.MixinOf.convertSi64 c)
     | none => none
   | .float32 c => some (wasmPromote c)
-  | .float64 _ => none
+  | .float64 _ | .vec128 _ => none
 
 @[rocq_alias iriswasm.cvt]
 def cvt (t : ValueType) (s : Option Sx) (v : Value) : Option Value :=
@@ -633,7 +700,27 @@ def cvt (t : ValueType) (s : Option Sx) (v : Value) : Option Value :=
   | .i32 => (cvtI32 s v).map .int32
   | .i64 => (cvtI64 s v).map .int64
   | .f32 => (cvtF32 s v).map .float32
+  | .v128 => none
   | .f64 => (cvtF64 s v).map .float64
+
+/-- A saturating conversion is defined only for an integer target and a float operand.
+Unlike `cvt`, `none` means an ill-shaped instruction, never a numeric trap. -/
+def truncSat (dst : ValueType) (sx : Sx) (v : Value) : Option Value :=
+  match dst, v with
+  | .i32, .float32 x => some (.int32 (IEEE.Format.f32.truncSat (sx == .s) 32 x.bits))
+  | .i32, .float64 x => some (.int32 (IEEE.Format.f64.truncSat (sx == .s) 32 x.bits))
+  | .i64, .float32 x => some (.int64 (IEEE.Format.f32.truncSat (sx == .s) 64 x.bits))
+  | .i64, .float64 x => some (.int64 (IEEE.Format.f64.truncSat (sx == .s) 64 x.bits))
+  | _, _ => none
+
+theorem truncSat_total {dst : ValueType} {v : Value} (sx : Sx)
+    (hd : isIntT dst = true) (hs : isFloatT (typeof v) = true) :
+    ∃ w, truncSat dst sx v = some w := by
+  cases dst <;> cases v <;> simp_all [isIntT, isFloatT, typeof, truncSat]
+
+theorem truncSat_typeof {dst : ValueType} {sx : Sx} {v w : Value}
+    (h : truncSat dst sx v = some w) : typeof w = dst := by
+  cases dst <;> cases v <;> simp [truncSat] at h <;> subst w <;> rfl
 
 @[rocq_alias iriswasm.bits]
 def bits (v : Value) : Bytes :=
@@ -642,6 +729,7 @@ def bits (v : Value) : Bytes :=
   | .int64 c => serialiseI64 c
   | .float32 c => serialiseF32 c
   | .float64 c => serialiseF64 c
+  | .vec128 c => encodeInt 16 c.toNat
 
 @[rocq_alias iriswasm.bitzero]
 def bitzero (t : ValueType) : Value :=
@@ -650,6 +738,7 @@ def bitzero (t : ValueType) : Value :=
   | .i64 => .int64 Int.zero
   | .f32 => .float32 Float.MixinOf.zero
   | .f64 => .float64 Float.MixinOf.zero
+  | .v128 => .vec128 0
 
 @[rocq_alias iriswasm.n_zeros]
 def nZeros (ts : List ValueType) : List Value := ts.map bitzero

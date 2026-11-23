@@ -34,19 +34,18 @@ def M (advModule : Module) : List Module := [advModule, lseModule]
 
 section adequacy
 
-/- Coq's context has one `gen_heapGpreS` per heap; heaps of the same key/value types
-(`tabsize`/`memsize`: `N ↦ nat`/`N ↦ N`, `tablimits`/`memlimit`: `N ↦ option N`) share one
-Lean instance. -/
+/- The table and memory limit heaps still share their `Option Nat` instance. -/
 variable (GF : BundledGFunctors) [InvGpreS GF] [NaInvG GF]
   [genHeapPreS Nat FunctionClosure GF NatMap] [genHeapPreS (Nat × Nat) Funcelem GF NatPairMap]
   [genHeapPreS Nat Nat GF NatMap] [genHeapPreS Nat (Option Nat) GF NatMap]
+  [genHeapPreS Nat (AddrType × Nat × Nat) GF NatMap]
   [genHeapPreS (Nat × Nat) Byte GF NatPairMap] [genHeapPreS Nat Global GF NatMap]
   [genHeapPreS Unit Frame GF UnitMapF] [genHeapPreS Nat ModuleExport GF NatMap]
   [genHeapPreS Nat Module GF NatMap] [genHeapPreS Nat HostAction GF NatMap]
 
 include GF
 
-@[rocq_alias iriswasm.ex_adequacy]
+#rocq_ignore iriswasm.ex_adequacy "The ghost signature includes the typed memory metadata heap"
 theorem ex_adequacy [AdvModuleRecord] (he' : HostExpr) (S' : StoreRecord) (V' : ViStore)
     (M' : List Module) (HA' : List HostAction) (F : Frame) (vs : ModuleExport)
     (hmodtyping : ModuleTyping AdvModuleRecord.advModule [] lseFuncImpts)
@@ -66,7 +65,7 @@ theorem ex_adequacy [AdvModuleRecord] (he' : HostExpr) (S' : StoreRecord) (V' : 
   imod genHeap_init (∅ : NatMap Nat) with ⟨%Gtabsize, Htabsize, -⟩
   imod genHeap_init (∅ : NatMap (Option Nat)) with ⟨%Gtablimit, Htablimit, -⟩
   imod genHeap_init (∅ : NatPairMap Byte) with ⟨%Gmem, Hmem, -⟩
-  imod genHeap_init (∅ : NatMap Nat) with ⟨%Gmemsize, Hmemsize, -⟩
+  imod genHeap_init (∅ : NatMap (AddrType × Nat × Nat)) with ⟨%Gmemsize, Hmemsize, -⟩
   imod genHeap_init (∅ : NatMap (Option Nat)) with ⟨%Gmemlimit, Hmemlimit, -⟩
   imod genHeap_init (∅ : NatMap Global) with ⟨%Gglob, Hglob, -⟩
   imod ghost_map_alloc_empty (GF := GF) (K := Unit) (V := Frame) (H := UnitMapF)
@@ -106,9 +105,9 @@ theorem ex_adequacy [AdvModuleRecord] (he' : HostExpr) (S' : StoreRecord) (V' : 
     have hms : gmapOfList (M AdvModuleRecord.advModule) =
         insert (insert (∅ : NatMap Module) 1 lseModule) 0 AdvModuleRecord.advModule := rfl
     have hhas : gmapOfList ([] : List HostAction) = ∅ := rfl
-    have hmemsize : gmapOfList (S.mems.map lengthMem) = ∅ := rfl
+    have hmemsize : gmapOfList (S.mems.map memLengthMeta) = ∅ := rfl
     have htabsize : gmapOfList (S.tables.map tabSize) = ∅ := rfl
-    have hmemlimit : gmapOfList (S.mems.map (·.maxOpt)) = ∅ := rfl
+    have hmemlimit : gmapOfList (S.mems.map (·.type.limits.max)) = ∅ := rfl
     have htablimit : gmapOfList (S.tables.map (·.maxOpt)) = ∅ := rfl
     simp only [hostStateInterp, hfuncs, htab, hmem, hglob, hms, hhas, hmemsize, htabsize,
       hmemlimit, htablimit, V]
@@ -148,6 +147,7 @@ def lseAdequacyGF : BundledGFunctors
   | 16 => ⟨constOF (HeapView Nat (Agree (DiscreteO ModuleExport)) NatMap)⟩
   | 17 => ⟨constOF (HeapView Nat (Agree (DiscreteO Module)) NatMap)⟩
   | 18 => ⟨constOF (HeapView Nat (Agree (DiscreteO HostAction)) NatMap)⟩
+  | 19 => ⟨constOF (HeapView Nat (Agree (DiscreteO (AddrType × Nat × Nat))) NatMap)⟩
   | _ => ⟨constOF Unit⟩
 
 instance : InvGpreS lseAdequacyGF where
@@ -171,6 +171,8 @@ instance : genHeapPreS Nat ModuleExport lseAdequacyGF NatMap :=
 instance : genHeapPreS Nat Module lseAdequacyGF NatMap := ⟨⟨⟨17, rfl⟩⟩, ⟨⟨6, rfl⟩⟩, ⟨5, rfl⟩⟩
 instance : genHeapPreS Nat HostAction lseAdequacyGF NatMap :=
   ⟨⟨⟨18, rfl⟩⟩, ⟨⟨6, rfl⟩⟩, ⟨5, rfl⟩⟩
+instance : genHeapPreS Nat (AddrType × Nat × Nat) lseAdequacyGF NatMap :=
+  ⟨⟨⟨19, rfl⟩⟩, ⟨⟨6, rfl⟩⟩, ⟨5, rfl⟩⟩
 
 @[rocq_alias iriswasm.lse_adequacy]
 theorem lse_adequacy [AdvModuleRecord] (he' : HostExpr) (S' : StoreRecord) (V' : ViStore)

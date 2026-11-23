@@ -22,17 +22,17 @@ Local 2 stores the new address of the stack top pointer. -/
 @[rocq_alias iriswasm.push_op]
 def pushOp : List BasicInstruction :=
   isFullOp ++
-  [ .if_ (.tf [] []) [.unreachable] [],
+  [ .if_ (.result none) [.unreachable] [],
     .getLocal 0,
-    .load .i32 none 0 0,
+    .load .i32 none ⟨0, 0, 0⟩,
     i32const 4,
     .binop .i32 (.i .add),
     .teeLocal 2,
     .getLocal 1,
-    .store .i32 none 0 0,
+    .store .i32 none ⟨0, 0, 0⟩,
     .getLocal 0,
     .getLocal 2,
-    .store .i32 none 0 0 ]
+    .store .i32 none ⟨0, 0, 0⟩ ]
 
 @[rocq_alias iriswasm.push]
 def push : List BasicInstruction :=
@@ -105,7 +105,7 @@ private theorem wp_store_uint {E : CoPset} (v : Value) (bs : Bytes) (k n : Nat) 
     (hk : k < 4294967296) (ht : typesAgree .i32 v = true) (hlen : bs.length = 4)
     (hn : f.inst.memory[0]? = some n) :
     (iprop(↪[frame] f ∗ n ↦[wms][ k ] bs) : IProp GF) ⊢
-      WP ([.basic (.const (valueOfUint k)), .basic (.const v), .basic (.store .i32 none 0 0)]
+      WP ([.basic (.const (valueOfUint k)), .basic (.const v), .basic (.store .i32 none ⟨0, 0, 0⟩)]
         : Expr) @ E {{ w, ⌜w = Val.immV []⌝ ∗ (n ↦[wms][ k ] bits v ∗ ↪[frame] f) }} := by
   iintro ⟨Hf, Hb⟩
   have e := addr_eq k hk
@@ -114,8 +114,8 @@ private theorem wp_store_uint {E : CoPset} (v : Value) (bs : Bytes) (k n : Nat) 
   iapply wp_wand_s (Φ := fun w => iprop((⌜w = .immV []⌝ ∗
       n ↦[wms][ Wasm.Int.nOfUint (Wasm.Int.intOfZ (w := 32) (k : _root_.Int)) + 0 ] bits v) ∗
       ↪[frame] f)) $$ [Hf Hb]
-  · iapply wp_store (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32 v bs 0 0
-      (Wasm.Int.intOfZ (k : _root_.Int)) n f ht hlen hn
+  · iapply wp_store (x := 0) (fun w => iprop(⌜w = .immV []⌝)) _ _ .i32 v bs 0 0
+      (.i32 (Wasm.Int.intOfZ (k : _root_.Int))) n f ht hlen hn
     isplitr
     · inext; ipureintro; rfl
     isplitl [Hf]
@@ -189,9 +189,9 @@ theorem spec_push_op (f0 : Frame) (n v : Nat) (a : I32) (s : List I32) (E : CoPs
   iapply wp_seq_imm [] iprop(↪[frame] f0) $$ [Hf]
   · iapply wp_if_false (show Wasm.Int.intOfZ (w := 32) 0 = Wasm.Int.zero by decide) $$ Hf
     iintro !> Hf
-    rw [show ([.basic (.block (.tf [] []) [])] : Expr) = [] ++ [.basic (.block (.tf [] []) [])]
+    rw [show ([.basic (.block (.result none) [])] : Expr) = [] ++ [.basic (.block (.result none) [])]
       from rfl]
-    iapply wp_block (vs := []) rfl rfl rfl rfl $$ Hf
+    iapply wp_block (bt := .result none) (vs := []) rfl rfl rfl rfl rfl $$ Hf
     iintro !> Hf
     iapply wp_label_value (Φ := fun w => iprop(⌜w = .immV []⌝)) (by rfl) $$ Hf
     inext; ipureintro; rfl
@@ -211,7 +211,7 @@ theorem spec_push_op (f0 : Frame) (n v : Nat) (a : I32) (s : List I32) (E : CoPs
   -- add 4; tee_local 2
   take_drop_app_rewrite 3
   iapply wp_seq_imm [valueOfUint (v + s.length * 4 + 4)] iprop(↪[frame] f0) $$ [Hf]
-  · iapply wp_binop (t := .i32) (binop_add4_valueOfUint _) $$ Hf
+  · iapply wp_binop (t := .i32) rfl rfl .i32Agree (binop_add4_valueOfUint _) $$ Hf
     inext; ipureintro; rfl
   iintro Hf
   take_drop_app_rewrite 2
@@ -331,7 +331,7 @@ private theorem stack_valid_binary (m : Nat) (i0 : Instance) (hm : i0.memory[0]?
         ↪[frame] (⟨[valueOfUint v, .int32 a] ++ nZeros [.i32], i0⟩ : Frame) }}}} (toEList op)
         {{{{ w, interpVal [] w ∗ (∃ stk', isStack v stk' m) ∗ ∃ f1, ↪[frame] f1 }}}} : IProp GF)) :
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32, .i32] [] [.i32]
         (toEList (validateStack 0 ++ validateStackBound 0 ++ op)) [] : IProp GF) := by
   unfold interpClosureNative
@@ -360,13 +360,13 @@ private theorem stack_valid_binary (m : Nat) (i0 : Instance) (hm : i0.memory[0]?
       have h : valueOfUint v = valueOfUint v' := by simpa using hloc
       rw [h]; exact Hop v' z1 stk) $$ Hstk Hown Hf
 
-@[rocq_alias iriswasm.valid_push]
+#rocq_ignore iriswasm.valid_push "The stack invariant owns memory32 metadata"
 theorem valid_push (m t : Nat) (funcs : List Funcaddr) :
     let i0 : Instance :=
       { types := [.tf [] [.i32], .tf [.i32] [.i32], .tf [.i32, .i32] []], funcs := funcs,
         tab := [t], memory := [m], globs := [] };
     ⊢ (NonAtomicInvariant.inv (LogrelNaInvs.logrelNais (GF := GF)) stkN
-        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] n)) -∗
+        (stackModuleInv (fun a b => isStack a b m) (fun n => m ↦[wmlength] (.i32, n))) -∗
       interpClosureNative i0 [.i32, .i32] [] [.i32] (toEList push) [] : IProp GF) := by
   intro i0
   refine stack_valid_binary m i0 rfl pushOp ?_
@@ -402,7 +402,7 @@ theorem valid_push (m t : Nat) (funcs : List Funcaddr) :
     subst hw
     rw [show ofVal (.immV [valueOfInt 1]) ++ toEList (pushOp.drop 9) =
       [.basic (.const (.int32 (Wasm.Int.intOfZ 1))),
-        .basic (.if_ (.tf [] []) [.unreachable] [])] ++ toEList (pushOp.drop 10) from rfl]
+        .basic (.if_ (.result none) [.unreachable] [])] ++ toEList (pushOp.drop 10) from rfl]
     iapply wp_wand_s $$ [Hf]
     · iapply wp_if_unreachable_trap (Wasm.Int.intOfZ 1) (by decide) _ _ $$ Hf
     iintro %w ⟨%hw, Hf⟩
