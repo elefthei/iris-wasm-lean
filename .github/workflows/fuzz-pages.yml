@@ -39,10 +39,11 @@ jobs:
         with:
           auto-config: 'false'
           build: 'true'
-          build-args: '--no-cache WasmTest.SignExtension'
+          build-args: '--no-cache WasmTest.SignExtension WasmTest.FuzzRuntime'
           use-mathlib-cache: 'false'
 
       - name: Fetch pinned fixtures and build their wasm3 oracle
+        id: oracle
         run: |
           PYTHONPATH=tools python3 -B - <<'PY'
           from core3 import FIXTURES, FIXTURE_REV, HARNESS, HARNESS_REV, checkout
@@ -53,17 +54,39 @@ jobs:
           CC=clang cmake -S "$src" -B "$src/build" -DBUILD_WASI=simple -DCMAKE_C_FLAGS=-Dd_m3HasTypedRefs=1
           cmake --build "$src/build" --parallel
 
-      - name: Compare live Lean and wasm3 results
+      - name: Compare pinned sign-extension exports
         id: fuzz
         run: |
           python3 -B tools/core3.py fuzz-signext --cases "$CASES" --seed "$SEED" \
             --skip-features none --wasm3 .lake/core3/wasm3/build/wasm3 \
             --out-dir "$RUNNER_TEMP/fuzz-evidence" --keep-going
 
+      - name: Compare all shared runtime instruction families
+        id: runtime
+        if: ${{ !cancelled() && steps.oracle.outcome == 'success' }}
+        run: |
+          python3 -B tools/parity_runtime.py --cases "$CASES" --seed "$SEED" \
+            --skip-features none --wasm3 .lake/core3/wasm3/build/wasm3 \
+            --out-dir "$RUNNER_TEMP/runtime-evidence"
+
+      - name: Retain raw evidence for replay
+        id: raw
+        if: ${{ !cancelled() && steps.oracle.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-evidence-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/fuzz-evidence
+            ${{ runner.temp }}/runtime-evidence
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Render parity report (including failures)
         if: ${{ !cancelled() }}
         env:
           OUTCOME: ${{ steps.fuzz.outcome }}
+          RAW_ARTIFACT_ID: ${{ steps.raw.outputs.artifact-id }}
+          RUNTIME_OUTCOME: ${{ steps.runtime.outcome }}
         run: |
           if [[ ! -f tools/fuzz_report.py ]]; then
             mkdir "$RUNNER_TEMP/parity-site"
@@ -72,16 +95,8 @@ jobs:
             exit 1
           fi
           python3 -B tools/fuzz_report.py --seed "$SEED" --cases "$CASES" --outcome "$OUTCOME" \
+            --runtime-evidence "$RUNNER_TEMP/runtime-evidence" --runtime-outcome "$RUNTIME_OUTCOME" \
             "$RUNNER_TEMP/fuzz-evidence" "$RUNNER_TEMP/parity-site"
-
-      - name: Retain raw evidence for replay
-        if: ${{ !cancelled() && (steps.fuzz.outcome == 'success' || steps.fuzz.outcome == 'failure') }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: fuzz-evidence-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/fuzz-evidence
-          retention-days: 7
-          if-no-files-found: error
 
       - name: Upload report only
         id: upload

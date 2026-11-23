@@ -118,17 +118,45 @@ the driver exits nonzero and prints the export, operand, expected bits and both 
 For a bug report, include the failing `cases.jsonl` row, `oracle.json` and the replay command.
 A timeout or a missing engine means the run was incomplete; neither identifies an interpreter bug.
 
+### Fuzz the shared runtime instruction families
+
+The runtime campaign generates small, well-typed modules for the instructions implemented
+by both engines. It covers scalar arithmetic and comparisons, conversions and reinterpretation,
+locals and globals, structured control flow, direct and indirect calls, and scalar memory
+operations with 32- and 64-bit addresses. Each module exports `run`; a fixed helper function,
+table, mutable global and two distinct memories give the stateful tests something to observe.
+Stores are tested by reading back the bytes they wrote.
+
+With the pinned wasm3 source build in place, run the same campaign as CI:
+
+```sh
+python3 -B tools/parity_runtime.py --cases 257 --seed 42 \
+  --wasm3 .lake/core3/wasm3/build/wasm3 --skip-features none
+```
+
+Use `--target f32.sqrt` (or another target name from the report) to replay one operation.
+Lean decodes the sized body and executes it in the matching fixture state. wasm3 loads the
+whole generated module. Floating-point values cross the test interface as integer bits, so
+signed zero and NaN payloads survive transport. Results must agree bit for bit except where
+the numeric rule permits a choice of NaN. For traps the engines compare the outcome, not the
+diagnostic text. Running out of steps or failing to load a module is an incomplete test.
+
+Unlike the pinned sign-extension assertions, these generated programs use the other engine
+as a cross-check; agreement alone cannot detect a bug shared by both. The campaign does
+not exercise arbitrary modules or host imports. SIMD has no wasm3 comparison, and Core 3
+proposals without executable Lean rules are outside this inventory.
+
 ### CI parity report
 
-The [fuzz parity report](https://elefthei.github.io/iris-wasm-lean/) shows how many calls
-matched for each export and the inputs and results for any disagreements. GitHub Actions
-runs all five exports on pushes to `main`, daily, and on manual runs from `main`. Each run
-uses its start time in Unix nanoseconds as the seed and tests 257 operands per export.
+The [fuzz parity report](https://elefthei.github.io/iris-wasm-lean/) covers both campaigns:
+the pinned sign-extension exports and the generated runtime programs. GitHub Actions runs
+them on pushes to `main`, daily, and on manual runs from `main`. Both use the same fresh
+Unix-nanosecond seed and 257 trials per target. The page lists missing observations separately
+from disagreements and includes replay commands.
 
-CI builds wasm3 from the pinned source (`--skip-features none`). It uses `--keep-going`
-to record later comparisons after a mismatch. A disagreement still fails the check;
-a build or engine failure leaves unobserved cases marked missing. Pages publishes the
-report in either case. Use the seed and replay command on the page to reproduce a run.
+A mismatch fails CI without suppressing the other targets or the report. For a bug report,
+download the run's `fuzz-evidence` artifact. The runtime suite saves the generated `.wasm`
+modules, both engines' observations, raw streams and any infrastructure errors.
 
 On a fork, select **GitHub Actions** under **Settings → Pages → Source**, then run the
 [Pages workflow](.github/workflows/fuzz-pages.yml) from the Actions tab.
