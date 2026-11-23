@@ -218,7 +218,7 @@ patch does not modify the pinned checkout or count those rules as implemented in
 
 ## Citation
 
-This repository ports the Coq artefact of:
+This repository ports the Coq artifact of:
 
 > Xiaojia Rao, Aïna Linn Georges, Maxime Legoupil, Conrad Watt, Jean Pichon-Pharabod, Philippa Gardner, and Lars Birkedal.
 > **Iris-Wasm: Robust and Modular Verification of WebAssembly Programs.**
