@@ -8,6 +8,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import random
 import re
 import select
 import shlex
@@ -1714,7 +1715,33 @@ def signext_lean(module, exports, cases, folder, timeout):
     return parse_signext_rows(stdout.read_bytes(), cases)
 
 
-def signext_pairs(args, width, module, exports, cases, folder, records):
+def signext_fuzz_batches(width, exports, count, seed):
+    bits = SCALARS[width]
+    # Separate streams keep each export's operands stable across batch sizes and longer runs.
+    streams = {e.field: random.Random(f"{seed}:{width}:{e.field}") for e in exports}
+    for start in range(0, count, 32):  # bound the generated Lean program, not the campaign
+        stop = min(start + 32, count)
+        batch, cases = [], {}
+        for slot, e in enumerate(exports):
+            k = {"extend8_s": 8, "extend16_s": 16, "extend32_s": 32}[e.field]
+            sign, mask = 1 << (k - 1), (1 << k) - 1
+            edges = (0, 1, sign - 1, sign, sign + 1, mask)
+            ids = range(slot * count + start + 1, slot * count + stop + 1)
+            batch.append(e._replace(ordinals=ids))
+            for trial, i in enumerate(ids, start):
+                n = streams[e.field].getrandbits(bits)
+                if trial % 2 == 0:
+                    n = (n & ~mask) | edges[(trial // 2) % len(edges)]
+                low = n & mask
+                signed = low if low < sign else low - (1 << k)
+                cases[i] = {"type": "assert_return",
+                            "action": {"type": "invoke", "field": e.field,
+                                       "args": [{"type": width, "value": str(n)}]},
+                            "expected": [{"type": width, "value": str(signed % (1 << bits))}]}
+        yield start, batch, cases
+
+
+def signext_pairs(args, width, module, exports, cases, folder, records, *, seed=None):
     folder.mkdir()
     filename = f"{width}.0.wasm"
     (folder / filename).write_bytes(module)
@@ -1728,7 +1755,8 @@ def signext_pairs(args, width, module, exports, cases, folder, records):
         for e in exports:
             for i in e.ordinals:
                 c = cases[i]
-                case_id = ["converted", f"{width}.json", i, c["line"]]
+                case_id = (["converted", f"{width}.json", i, c["line"]] if seed is None
+                           else ["fuzz-signext", seed, width, i])
                 lean = {"kind": "return", "values": [rows[i]]}
                 try:
                     oracle = client.request({**c["action"], "module": width})
@@ -1742,21 +1770,38 @@ def signext_pairs(args, width, module, exports, cases, folder, records):
                                     "lean": lean, "oracle": oracle, "agrees": agrees})
                 if agrees:
                     yield i, (c, lean, oracle)
+                elif seed is not None:
+                    message = (f"Disagreement {case_id}: {width}.{e.field}({c['action']['args'][0]['value']})"
+                               f"\n  expected: {c['expected']}\n  Lean: {lean}\n  wasm3: {oracle}")
+                    if not args.keep_going:
+                        raise SystemExit(f"{message}\n  Evidence: {folder.parent / 'cases.jsonl'}"
+                                         f"\n  Replay: {folder.parent / 'replay.txt'}")
+                    print(message, file=sys.stderr)
                 else:
                     print(f"Mismatch: {case_id} (see cases.jsonl)", file=sys.stderr)
 
 
-def check_signext(args):
+def signext_directory(prefix):
     parent = CACHE / "fragment-results"
     parent.mkdir(parents=True, exist_ok=True)
-    out_dir = Path(mkdtemp(prefix="signext-", dir=parent))
+    out_dir = Path(mkdtemp(prefix=prefix, dir=parent))
     print(f"Evidence: {out_dir}", flush=True)
+    return out_dir
+
+
+def prepare_signext(args, out_dir):
+    inputs = list(signext_inputs())
+    args.wasm3 = args.wasm3.resolve()
+    verify_profile(args, pinned_policy(), out_dir)
+    offline_lake("--log-level=error", "build", "WasmTest.SignExtension")
+    return inputs
+
+
+def check_signext(args):
+    out_dir = signext_directory("signext-")
     passed = {}
     try:
-        inputs = list(signext_inputs())
-        args.wasm3 = args.wasm3.resolve()
-        verify_profile(args, pinned_policy(), out_dir)
-        offline_lake("--log-level=error", "build", "WasmTest.SignExtension")
+        inputs = prepare_signext(args, out_dir)
         with (out_dir / "cases.jsonl").open("w") as records:
             for width, module, exports, cases in inputs:
                 for i, trial in signext_pairs(args, width, module, exports, cases, out_dir / width, records):
@@ -1777,6 +1822,39 @@ def check_signext(args):
         raise SystemExit(1)
 
 
+def fuzz_signext(args):
+    if args.out_dir is None:
+        out_dir = signext_directory("fuzz-signext-")
+    else:
+        out_dir = args.out_dir
+        out_dir.mkdir(parents=True)  # an existing campaign must never supply this run's evidence
+        print(f"Evidence: {out_dir}", flush=True)
+    seed = random.SystemRandom().getrandbits(64) if args.seed is None else args.seed
+    cmd = ["python3", "-B", "tools/core3.py", "fuzz-signext", "--seed", str(seed),
+           "--cases", str(args.cases), "--wasm3", str(args.wasm3),
+           "--skip-features", args.skip_features, "--timeout", str(args.timeout)]
+    if args.keep_going:
+        cmd.append("--keep-going")
+    replay = shlex.join(cmd)
+    (out_dir / "replay.txt").write_text(replay + "\n")
+    print(f"Replay from package root: {replay}", flush=True)
+    matched = 0
+    try:
+        inputs = prepare_signext(args, out_dir)
+        with (out_dir / "cases.jsonl").open("w") as records:
+            for width, module, exports, _ in inputs:
+                for start, batch, cases in signext_fuzz_batches(width, exports, args.cases, seed):
+                    folder = out_dir / f"{width}-{start}"
+                    for _ in signext_pairs(args, width, module, batch, cases, folder, records, seed=seed):
+                        matched += 1
+    except FAULTS as err:
+        raise ValueError(f"fuzz run incomplete after {matched} matches: {err}; see {out_dir}") from err
+    required = 5 * args.cases
+    print(f"{matched}/{required} fuzz comparisons matched (isolated function bodies)")
+    if matched != required:
+        raise SystemExit(f"Fuzz parity check failed; see {out_dir / 'cases.jsonl'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -1786,18 +1864,27 @@ def main():
     tests = commands.add_parser("test", help="run full Lean, upstream protocol and direct differential lanes")
     tests.add_argument("--lean", type=Path, default=ROOT / ".lake/build/bin/wasm-core")
     fragment = commands.add_parser("check-signext", help="compare isolated sign-extension function bodies")
-    for p in (tests, fragment):
+    fuzz = commands.add_parser("fuzz-signext", help="fuzz valid integer operands against live wasm3")
+    fuzz.add_argument("--seed", type=int, help="replay seed (default: print a fresh random seed)")
+    fuzz.add_argument("--cases", type=int, default=64, help="inputs per export (default: 64)")
+    fuzz.add_argument("--out-dir", type=Path, help="write evidence to this new directory")
+    fuzz.add_argument("--keep-going", action="store_true", help="record all parity disagreements before failing")
+    for p in (tests, fragment, fuzz):
         p.add_argument("--wasm3", type=Path, default=Path("/usr/bin/wasm3"))
         p.add_argument("--skip-features", choices=("atomics", "none"), required=True)
         p.add_argument("--timeout", type=int, default=30, help="per observation watchdog, in seconds")
     args = parser.parse_args()
     if args.command == "prepare":
         prepare()
-    elif args.command in {"test", "check-signext"}:
+    elif args.command in {"test", "check-signext", "fuzz-signext"}:
         if args.timeout < 1:
             parser.error("--timeout must be positive")
         if args.command == "test":
             test(args)
+        elif args.command == "fuzz-signext":
+            if args.cases < 1:
+                parser.error("--cases must be positive")
+            fuzz_signext(args)
         else:
             check_signext(args)
     else:

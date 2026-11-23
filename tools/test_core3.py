@@ -1,8 +1,8 @@
 import unittest
 
-from core3 import (FIXTURE_REV, SPEC_REV, check_request, compare_pair, expected_command,
-                   matches_expected, parse_oracle, parse_signext_rows, unwire_name, wire_name,
-                   wire_reason, wire_reply)
+from core3 import (FIXTURE_REV, SIGNEXT, SPEC_REV, check_request, compare_pair, expected_command,
+                   matches_expected, parse_oracle, parse_signext_rows, signext_fuzz_batches,
+                   unwire_name, wire_name, wire_reason, wire_reply)
 
 
 def value(t, n):
@@ -166,6 +166,45 @@ class ComparisonTests(unittest.TestCase):
         self.assertFalse(compare_pair(invalid, {"kind": "malformed"}, {"kind": "rejected"}))
         self.assertFalse(compare_pair({"type": "assert_exception"}, {"kind": "exception", "handle": 4},
                                      {"kind": "trap", "diagnostic": "uncaught exception"}))
+
+
+class SignextFuzzTests(unittest.TestCase):
+    def test_seed_replays_across_partial_batches(self):
+        exports = SIGNEXT["i64"][1]
+
+        def collect(seed, count):
+            by_export = {e.field: [] for e in exports}
+            for _, _, cases in signext_fuzz_batches("i64", exports, count, seed):
+                for c in cases.values():
+                    action = c["action"]
+                    by_export[action["field"]].append(action["args"][0])
+            return by_export
+
+        run = collect(17, 35)
+        self.assertEqual(run, collect(17, 35))
+        self.assertNotEqual(run, collect(18, 35))
+        longer = collect(17, 40)
+        for e in exports:
+            self.assertEqual(len(run[e.field]), 35)
+            self.assertEqual(run[e.field], longer[e.field][:35])
+
+    def test_expected_bits_and_sign_boundaries(self):
+        for width, (_, exports) in SIGNEXT.items():
+            size = {"i32": 4, "i64": 8}[width]
+            for _, batch, cases in signext_fuzz_batches(width, exports, 32, 0):
+                for e in batch:
+                    kept = {"extend8_s": 1, "extend16_s": 2, "extend32_s": 4}[e.field]
+                    seen = set()
+                    for i in e.ordinals:
+                        c = cases[i]
+                        n = int(c["action"]["args"][0]["value"])
+                        low = n.to_bytes(size, "little")[:kept]
+                        signed = int.from_bytes(low, "little", signed=True)
+                        seen.add(signed)
+                        want = int.from_bytes(signed.to_bytes(size, "little", signed=True), "little")
+                        self.assertEqual(c["expected"], [value(width, want)])
+                    sign = 1 << (8 * kept - 1)
+                    self.assertTrue({sign - 1, -sign, -sign + 1, -1, 0, 1} <= seen)
 
 
 class WireTests(unittest.TestCase):

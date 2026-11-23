@@ -1,0 +1,106 @@
+name: Differential fuzz parity
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: fuzz-pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  campaign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      CASES: '257'
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact_id }}
+    steps:
+      - name: Select campaign seed
+        run: echo "SEED=$(date +%s%N)" >> "$GITHUB_ENV"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run driver and report unit tests
+        run: python3 -B -m unittest discover -s tools -p 'test_*.py'
+
+      - name: Install pinned Lean and build the observer from the Lake manifest
+        uses: leanprover/lean-action@ba3fdfe5c4476c925da13bf11a005ddb47e47aee # v1.7.1
+        with:
+          auto-config: 'false'
+          build: 'true'
+          build-args: '--no-cache WasmTest.SignExtension'
+          use-mathlib-cache: 'false'
+
+      - name: Fetch pinned fixtures and build their wasm3 oracle
+        run: |
+          PYTHONPATH=tools python3 -B - <<'PY'
+          from core3 import FIXTURES, FIXTURE_REV, HARNESS, HARNESS_REV, checkout
+          checkout(HARNESS, 'wasm3/wasm3', HARNESS_REV)
+          checkout(FIXTURES, 'wasm3/wasm-core-testsuite', FIXTURE_REV)
+          PY
+          src=.lake/core3/wasm3
+          CC=clang cmake -S "$src" -B "$src/build" -DBUILD_WASI=simple -DCMAKE_C_FLAGS=-Dd_m3HasTypedRefs=1
+          cmake --build "$src/build" --parallel
+
+      - name: Compare live Lean and wasm3 results
+        id: fuzz
+        run: |
+          python3 -B tools/core3.py fuzz-signext --cases "$CASES" --seed "$SEED" \
+            --skip-features none --wasm3 .lake/core3/wasm3/build/wasm3 \
+            --out-dir "$RUNNER_TEMP/fuzz-evidence" --keep-going
+
+      - name: Render parity report (including failures)
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.fuzz.outcome }}
+        run: |
+          if [[ ! -f tools/fuzz_report.py ]]; then
+            mkdir "$RUNNER_TEMP/parity-site"
+            printf '<!doctype html><html lang="en"><title>Fuzz report unavailable</title><h1>Fuzz report unavailable</h1><p>The report generator was unavailable. <a href="%s">View the failed CI run</a>.</p></html>\n' \
+              "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > "$RUNNER_TEMP/parity-site/index.html"
+            exit 1
+          fi
+          python3 -B tools/fuzz_report.py --seed "$SEED" --cases "$CASES" --outcome "$OUTCOME" \
+            "$RUNNER_TEMP/fuzz-evidence" "$RUNNER_TEMP/parity-site"
+
+      - name: Retain raw evidence for replay
+        if: ${{ !cancelled() && (steps.fuzz.outcome == 'success' || steps.fuzz.outcome == 'failure') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fuzz-evidence
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Upload report only
+        id: upload
+        if: ${{ !cancelled() }}
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/parity-site
+
+  deploy:
+    needs: campaign
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && needs.campaign.outputs.artifact_id != '' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy parity report
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

@@ -98,6 +98,41 @@ Lean batches and raw output are beside it in the `i32/` and `i64/` subdirectorie
 The full suite counts its pairs separately. This check covers only isolated function bodies;
 it does not test whole-module validation or instantiation in Lean.
 
+### Fuzz integer operands
+
+With the same checkouts and wasm3 profile, run:
+
+```sh
+python3 -B tools/core3.py fuzz-signext --skip-features=atomics --cases 257
+```
+
+`--cases` is the number of inputs per export (default 64). Half the trials use random
+32- or 64-bit operands. The others fix the low bits at values such as `0x7fff`, `0x8000`
+and `0x8001` for `extend16_s`, while varying the bits the instruction should discard.
+The modules stay unchanged. For each input, Lean and wasm3 must agree with each other
+and with the signed value of the low 8, 16 or 32 bits.
+
+The command prints a fresh seed. Pass `--seed` to repeat it, or run the command in the
+evidence directory's `replay.txt` from the package root. On the first disagreement,
+the driver exits nonzero and prints the export, operand, expected bits and both observations.
+For a bug report, include the failing `cases.jsonl` row, `oracle.json` and the replay command.
+A timeout or a missing engine means the run was incomplete; neither identifies an interpreter bug.
+
+### CI parity report
+
+The [fuzz parity report](https://elefthei.github.io/iris-wasm-lean/) shows how many calls
+matched for each export and the inputs and results for any disagreements. GitHub Actions
+runs all five exports on pushes to `main`, daily, and on manual runs from `main`. Each run
+uses its start time in Unix nanoseconds as the seed and tests 257 operands per export.
+
+CI builds wasm3 from the pinned source (`--skip-features none`). It uses `--keep-going`
+to record later comparisons after a mismatch. A disagreement still fails the check;
+a build or engine failure leaves unobserved cases marked missing. Pages publishes the
+report in either case. Use the seed and replay command on the page to reproduce a run.
+
+On a fork, select **GitHub Actions** under **Settings → Pages → Source**, then run the
+[Pages workflow](.github/workflows/fuzz-pages.yml) from the Actions tab.
+
 ## Layout
 
 | Directory | Contents | Coq source |
